@@ -65,7 +65,8 @@ assert(info.CFBundleDisplayName === 'Форма', 'Display name must be Форм
 assert(info.CFBundleShortVersionString === version, 'Archived version does not match tag.');
 assert(info.CFBundleSupportedPlatforms?.includes('iPhoneOS'), 'Archive is not for physical iPhoneOS devices.');
 const executable = path.join(app, 'Forma');
-run('xcrun', ['lipo', '-verify_arch', 'arm64', executable]);
+// -verify_arch consumes all following arguments as architectures, so the input goes first.
+run('xcrun', ['lipo', executable, '-verify_arch', 'arm64']);
 const platformInfo = capture('xcrun', ['vtool', '-show-build', executable]);
 assert(/platform\s+IOS\b/.test(platformInfo) && !/IOSSIMULATOR/.test(platformInfo), 'Mach-O must target iOS devices, not the simulator.');
 const bundle = path.join(app, 'main.jsbundle');

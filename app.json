@@ -3,13 +3,13 @@
     "name": "Forma",
     "slug": "forma",
     "scheme": "forma",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "platforms": ["ios"],
     "ios": {
       "bundleIdentifier": "com.nerqed.forma",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "supportsTablet": false,
       "infoPlist": {
         "CFBundleDisplayName": "Форма",
