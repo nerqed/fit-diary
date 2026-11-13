@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Forma",
+    "slug": "forma",
+    "scheme": "forma",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "platforms": ["ios"],
+    "ios": {
+      "bundleIdentifier": "com.nerqed.forma",
+      "buildNumber": "1",
+      "supportsTablet": false,
+      "infoPlist": {
+        "CFBundleDisplayName": "Форма",
+        "CFBundleName": "Forma",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}
