@@ -1,6 +1,7 @@
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
+import { SymbolView } from 'expo-symbols';
 import { Button } from 'react-native';
 
 import {
@@ -11,6 +12,7 @@ import {
   TodayContainer,
   WorkoutsContainer,
 } from '../features/demo/ScreenContainers';
+import { tabIcons } from '../theme/tabIcons';
 import type { MainTabParamList, RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -20,10 +22,13 @@ function MainTabs({ navigation }: NativeStackScreenProps<RootStackParamList, 'Ma
   return (
     <Tab.Navigator
       initialRouteName="Today"
-      screenOptions={{
+      screenOptions={({ route }) => ({
         headerRight: () => <Button title="Профиль" onPress={() => navigation.navigate('Profile')} />,
-        tabBarIcon: () => null,
-      }}
+        tabBarIcon: ({ color, size }) => {
+          const name = tabIcons[route.name];
+          return name === null ? null : <SymbolView name={name} size={size} tintColor={color} />;
+        },
+      })}
     >
       <Tab.Screen name="Today" component={TodayContainer} options={{ title: 'Сегодня' }} />
       <Tab.Screen name="Diary" component={DiaryContainer} options={{ title: 'Дневник' }} />

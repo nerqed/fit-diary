@@ -9,7 +9,7 @@ export function WorkoutsScreen({ workouts }: WorkoutsScreenProps) {
       {workouts.map((workout) => (
         <View key={workout.id}>
           <Text>{workout.name}</Text>
-          {workout.exercises.map((exercise) => <Text key={exercise}>{exercise}</Text>)}
+          {workout.exercises.map((exercise) => <Text key={exercise.id}>{exercise.name}</Text>)}
         </View>
       ))}
     </PlaceholderScreen>
