@@ -68,6 +68,9 @@ jobs:
       - name: Check TypeScript
         if: steps.release.outputs.skip != 'true'
         run: npm run typecheck
+      - name: Check workout persistence, backups and calculations
+        if: steps.release.outputs.skip != 'true'
+        run: npm test
       - name: Check native app identity before spending macOS minutes
         if: steps.release.outputs.skip != 'true'
         run: node scripts/release/validate-config.mjs

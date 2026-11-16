@@ -1,4 +1,6 @@
 /** View contracts only: screens receive data/actions and never read storage or services. */
+export type { WorkoutLibraryScreenProps, WorkoutTemplateEditorScreenProps, WorkoutSessionScreenProps, ExerciseHistoryScreenProps, WorkoutBackupScreenProps } from './workouts';
+export type { MealEditorScreenProps, MealEditorItem, FoodCatalogEntry, RecognizedFood, FoodRecognitionAdapter, PhotoRecognitionJob } from './mealEditor';
 export type DemoRecord<T> = Readonly<T & { isDemo: true }>;
 /** ISO 8601 instant with offset (or Z). New records use the device clock. */
 export type Timestamp = string;
