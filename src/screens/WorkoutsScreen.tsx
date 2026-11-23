@@ -1,114 +1,121 @@
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRef } from 'react';
+import { useNavigation, useRoute, type CompositeNavigationProp, type RouteProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Alert, StyleSheet, Text } from 'react-native';
 
-import type { WorkoutSet, WorkoutsScreenProps } from '../contracts/screens';
-import { Card } from '../theme/components';
-import { Colors, Radii, Spacing, Typography, fmt } from '../theme';
-import { EmptyState, ScreenShell } from './ScreenShell';
-import { PrimaryButton } from './ui';
+import { useWorkout } from '../features/workouts/WorkoutContext';
+import type { WorkoutSession, WorkoutTemplate } from '../features/workouts/model';
+import { formatDay, localDay, sessionDay } from '../features/workouts/workoutDates';
+import type { MainTabParamList, RootStackParamList } from '../navigation/types';
+import { Colors, Spacing, Typography, weekdayLabel } from '../theme';
+import { Card, SectionHeader } from '../theme/components';
+import { ScreenShell } from './ScreenShell';
+import { Chip, PrimaryButton, Row } from './ui';
 
-function toNumber(text: string): number | null {
-  const v = Number(text.replace(',', '.'));
-  return text.trim() === '' || !Number.isFinite(v) || v < 0 ? null : v;
-}
+type Navigation = CompositeNavigationProp<
+  BottomTabNavigationProp<MainTabParamList, 'Workouts'>,
+  NativeStackNavigationProp<RootStackParamList>
+>;
 
-type SetRowProps = Readonly<{
-  index: number; set: WorkoutSet;
-  onChange: (change: Readonly<{ actualReps: number | null; weightKg: number | null; completed: boolean }>) => void;
-}>;
+export function WorkoutsScreen() {
+  const navigation = useNavigation<Navigation>();
+  const route = useRoute<RouteProp<MainTabParamList, 'Workouts'>>();
+  const { controller, data, pending } = useWorkout();
+  const busy = useRef(false);
+  const intent = useRef<{ key: string; id: string } | null>(null);
+  const today = localDay();
+  const day = route.params?.day === today ? undefined : route.params?.day;
+  const targetDay = day ?? today;
+  const active = data.sessions.find((session) => session.status === 'active');
+  const pastDay = day !== undefined && day < today;
+  const canStart = !active || pastDay;
+  // The repository lists sessions newest first. A retro entry only repeats workouts up to its own day.
+  const last = data.sessions.find((session) => session.status === 'completed' && (!day || sessionDay(session) <= day));
+  const catalog = new Map(data.exercises.map((exercise) => [exercise.id, exercise.name]));
 
-function SetRow({ index, set, onChange }: SetRowProps) {
-  const [weight, setWeight] = useState(set.weightKg === null ? '' : String(set.weightKg));
-  const [reps, setReps] = useState(set.actualReps === null ? '' : String(set.actualReps));
-  const commit = (completed: boolean) => onChange({ actualReps: toNumber(reps), weightKg: toNumber(weight), completed });
+  async function act(key: string, operation: (id: string) => Promise<void>) {
+    if (busy.current || pending) return;
+    busy.current = true;
+    try {
+      if (intent.current?.key !== key) intent.current = { key, id: controller.newId() };
+      await operation(intent.current.id);
+      intent.current = null;
+    } catch (error) {
+      Alert.alert('Не удалось выполнить действие', error instanceof Error ? error.message : 'Попробуйте ещё раз.');
+    } finally {
+      busy.current = false;
+    }
+  }
+
+  function openStarted(session: WorkoutSession) {
+    if (route.params?.day) navigation.setParams({ day: undefined });
+    navigation.navigate('WorkoutSession', session.backdated && session.status === 'completed'
+      ? { sessionId: session.id, edit: true } : { sessionId: session.id });
+  }
+
+  function confirmDelete(template: WorkoutTemplate) {
+    Alert.alert('Удалить шаблон?', `«${template.name}». Проведённые тренировки сохранятся в истории.`, [
+      { text: 'Отмена', style: 'cancel' },
+      { text: 'Удалить', style: 'destructive', onPress: () => {
+        void act(`delete:${template.id}`, () => controller.deleteTemplate(template.id));
+      } },
+    ]);
+  }
+
   return (
-    <View style={styles.set}>
-      <Text style={styles.setNo}>{index + 1}</Text>
-      <TextInput
-        style={styles.input} value={weight} onChangeText={setWeight} onEndEditing={() => commit(set.completed)}
-        keyboardType="decimal-pad" placeholder="кг" placeholderTextColor={Colors.muted} accessibilityLabel={`Вес, подход ${index + 1}`}
-      />
-      <Text style={styles.x}>×</Text>
-      <TextInput
-        style={styles.input} value={reps} onChangeText={setReps} onEndEditing={() => commit(set.completed)}
-        keyboardType="number-pad" placeholder={String(set.plannedReps)} placeholderTextColor={Colors.muted}
-        accessibilityLabel={`Повторения, подход ${index + 1}`}
-      />
-      <Pressable
-        accessibilityRole="checkbox" accessibilityState={{ checked: set.completed }}
-        accessibilityLabel={`Подход ${index + 1} выполнен`}
-        onPress={() => commit(!set.completed)} style={[styles.check, set.completed && styles.checkOn]}
-      >
-        <Text style={styles.checkText}>{set.completed ? '✓' : ''}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-export function WorkoutsScreen({ isDemo, workouts, onChangeSet, onReplaceExercise, onStartRest, onStopRest }: WorkoutsScreenProps) {
-  return (
-    <ScreenShell title="Тренировки" isDemo={isDemo}>
-      {workouts.length === 0 && <EmptyState text="Нет тренировки на сегодня." />}
-      {workouts.map((w) => {
-        const all = w.exercises.flatMap((e) => e.sets);
-        const done = all.filter((s) => s.completed).length;
-        return (
-          <View key={w.id} style={styles.gap}>
-            <Card>
-              <Text style={styles.day}>{w.weekdayLabel}</Text>
-              <Text style={styles.name}>{w.name}</Text>
-              <View style={styles.track}><View style={[styles.fill, { width: `${all.length ? (done / all.length) * 100 : 0}%` }]} /></View>
-              <Text style={styles.meta}>{done} из {all.length} подходов</Text>
-            </Card>
-            {w.exercises.map((e) => (
-              <Card key={e.id}>
-                <View style={styles.exHead}>
-                  <Text style={styles.exName}>{e.name}</Text>
-                  <Text style={styles.replace} onPress={() => onReplaceExercise(w.id, e.id)} accessibilityRole="button">Заменить</Text>
-                </View>
-                <Text style={styles.meta}>План: {e.sets.map((s) => s.plannedReps).join(' / ')} повт.</Text>
-                {e.sets.map((s, i) => (
-                  <SetRow key={s.id} index={i} set={s} onChange={(c) => {
-                    onChangeSet(w.id, e.id, s.id, c);
-                    if (c.completed && !s.completed) onStartRest(w.id, w.restTimerSeconds);
-                  }} />
-                ))}
-              </Card>
-            ))}
-            <Card>
-              <Text style={styles.meta}>Отдых</Text>
-              <Text style={styles.timer}>{fmt(Math.floor(w.restTimerSeconds / 60))}:{String(w.restTimerSeconds % 60).padStart(2, '0')}</Text>
-              <PrimaryButton
-                title={w.restTimerRunning ? 'Остановить отдых' : 'Запустить отдых'} secondary
-                onPress={() => (w.restTimerRunning ? onStopRest(w.id) : onStartRest(w.id, w.restTimerSeconds))}
-              />
-            </Card>
-          </View>
-        );
-      })}
+    <ScreenShell title="Тренировки">
+      {day && (
+        <Card style={styles.card}>
+          <Text style={styles.name}>Запись за {formatDay(day)}</Text>
+          <PrimaryButton secondary title="Перейти к сегодняшнему дню" onPress={() => navigation.setParams({ day: undefined })} />
+        </Card>
+      )}
+      {active && (
+        <Card style={styles.card}>
+          <Text style={styles.meta}>Начата {formatDay(sessionDay(active))}</Text>
+          <Text style={styles.name}>{active.name}</Text>
+          <PrimaryButton title="Продолжить тренировку" onPress={() => navigation.navigate('WorkoutSession', { sessionId: active.id })} />
+        </Card>
+      )}
+      {last && canStart && (
+        <Card style={styles.card}>
+          <Text style={styles.meta}>{formatDay(sessionDay(last))} · {last.name}</Text>
+          <PrimaryButton title="Повторить прошлую тренировку" disabled={pending}
+            onPress={() => { void act(`repeat:${last.id}:${targetDay}`, async (id) => openStarted(await controller.repeatSession(last.id, id, day))); }} />
+        </Card>
+      )}
+      {data.templates.length > 0 && <SectionHeader title="Мои шаблоны" />}
+      {data.templates.map((template) => (
+        <Card key={template.id} style={styles.card}>
+          {template.weekday && <Text style={styles.meta}>{weekdayLabel[template.weekday]}</Text>}
+          <Text style={styles.name}>{template.name}</Text>
+          <Text style={styles.meta} numberOfLines={2}>
+            {template.exercises.map((entry) => catalog.get(entry.exerciseId)).join(' · ')}
+          </Text>
+          {canStart && <PrimaryButton title={pastDay ? `Заполнить за ${formatDay(day)}` : 'Начать'} disabled={pending}
+            onPress={() => { void act(`start:${template.id}:${targetDay}`, async (id) => openStarted(await controller.startSession(template.id, id, day))); }} />}
+          <Row>
+            <Chip title="Изменить" onPress={() => navigation.navigate('WorkoutEditor', { templateId: template.id, day })} />
+            <Chip title="Скопировать" onPress={() => {
+              void act(`copy:${template.id}`, async (id) => {
+                const copy = await controller.copyTemplate(template.id, id);
+                navigation.navigate('WorkoutEditor', { templateId: copy.id, day });
+              });
+            }} />
+            <Chip title="Удалить" onPress={() => confirmDelete(template)} />
+          </Row>
+        </Card>
+      ))}
+      <PrimaryButton title={data.templates.length ? 'Создать тренировку' : 'Создай первую тренировку'}
+        secondary={data.templates.length > 0} onPress={() => navigation.navigate('WorkoutEditor', { day })} />
+      <PrimaryButton title="Резервные копии" secondary onPress={() => navigation.navigate('Backups')} />
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  gap: { gap: Spacing.m },
-  day: { ...Typography.captionSemibold, color: Colors.muted },
-  name: { ...Typography.h2, color: Colors.ink, marginTop: 2 },
-  track: { height: 6, borderRadius: 3, backgroundColor: Colors.track, marginTop: Spacing.m, overflow: 'hidden' },
-  fill: { height: 6, backgroundColor: Colors.accent },
-  meta: { ...Typography.caption, color: Colors.muted, marginTop: Spacing.xs },
-  exHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  exName: { ...Typography.bodySemibold, color: Colors.ink, flex: 1 },
-  replace: { ...Typography.captionSemibold, color: Colors.muted },
-  set: { flexDirection: 'row', alignItems: 'center', gap: Spacing.s, marginTop: Spacing.s },
-  setNo: { ...Typography.captionSemibold, color: Colors.muted, width: 18 },
-  input: {
-    flex: 1, ...Typography.bodySemibold, color: Colors.ink, backgroundColor: Colors.bg,
-    borderRadius: Radii.s, paddingVertical: 10, textAlign: 'center',
-  },
-  x: { ...Typography.body, color: Colors.muted },
-  check: { width: 44, height: 44, borderRadius: Radii.s, backgroundColor: Colors.accentSurface, alignItems: 'center', justifyContent: 'center' },
-  checkOn: { backgroundColor: Colors.accent },
-  checkText: { ...Typography.bodySemibold, color: Colors.white },
-  timer: { ...Typography.h1, color: Colors.ink, marginVertical: Spacing.s },
+  card: { gap: Spacing.m },
+  name: { ...Typography.h3, color: Colors.ink },
+  meta: { ...Typography.caption, color: Colors.muted },
 });

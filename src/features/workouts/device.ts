@@ -4,7 +4,7 @@ import { createWorkoutController, type WorkoutController } from './controller';
 
 let opening: Promise<WorkoutController> | null = null;
 
-/** Explicit integration point for future designer containers. Does not replace the demo UI. */
+/** All workout screens share one controller and one serialized SQLite connection. */
 export function openWorkoutController(): Promise<WorkoutController> {
   if (!opening) {
     opening = (async () => {

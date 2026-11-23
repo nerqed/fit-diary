@@ -1,19 +1,16 @@
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { MealActions } from '../../contracts/screens';
 import {
-  demoAssistantStates, demoDate, demoDayNutrition, demoExerciseBests, demoMeals,
-  demoProfile, demoProgress, demoWeightHistory, demoWorkout, emptyProfile,
+  demoAssistantStates, demoDate, demoDayNutrition, demoMeals, demoProfile, demoWorkout, emptyProfile,
 } from '../../mocks/demo';
 import type { MainTabParamList } from '../../navigation/types';
 import { AssistantScreen } from '../../screens/AssistantScreen';
 import { DiaryScreen } from '../../screens/DiaryScreen';
 import { ProfileScreen } from '../../screens/ProfileScreen';
-import { ProgressScreen } from '../../screens/ProgressScreen';
 import { TodayScreen } from '../../screens/TodayScreen';
-import { WorkoutsScreen } from '../../screens/WorkoutsScreen';
+import { WorkoutPreferences } from '../../screens/WorkoutPreferences';
 
 /** Designer-facing callbacks have a visible demo response, never a fake successful save. */
 function showDemoAction() {
@@ -54,24 +51,6 @@ export function DiaryContainer() {
   );
 }
 
-export function WorkoutsContainer() {
-  return (
-    <WorkoutsScreen
-      isDemo workouts={[demoWorkout]} onChangeSet={showDemoAction}
-      onReplaceExercise={showDemoAction} onStartRest={showDemoAction} onStopRest={showDemoAction}
-    />
-  );
-}
-
-export function ProgressContainer() {
-  return (
-    <ProgressScreen
-      isDemo metrics={demoProgress} weightHistory={demoWeightHistory}
-      exerciseBests={demoExerciseBests} onAddWeight={showDemoAction}
-    />
-  );
-}
-
 export function AssistantContainer() {
   return (
     <AssistantScreen
@@ -82,13 +61,9 @@ export function AssistantContainer() {
 }
 
 export function ProfileContainer() {
-  // Profile sits outside the tab navigator, so it owns the bottom safe area.
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['bottom']}>
-      <ProfileScreen
-        {...emptyProfile} onChangeField={showDemoAction} onChangeGoal={showDemoAction}
-        onChangeCalculation={showDemoAction} onSave={showDemoAction}
-      />
-    </SafeAreaView>
+    <ProfileScreen {...emptyProfile} fields={emptyProfile.fields.filter((field) => field.key !== 'waistCm')}
+      workoutPreferences={<WorkoutPreferences />} onChangeField={showDemoAction} onChangeGoal={showDemoAction}
+      onChangeCalculation={showDemoAction} onSave={showDemoAction} />
   );
 }

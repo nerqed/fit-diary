@@ -29,7 +29,9 @@ function customExercise(id = 'custom-squat'): Exercise {
 
 function fixture(): WorkoutData {
   return {
-    exercises: [customExercise()],
+    bodyWeights: [{ date: '2026-11-10', weightKg: 72.4 }],
+    settings: { showRir: true, showNotes: true },
+    exercises: [{ ...customExercise(), note: 'сиденье на 4' }],
     templates: [{
       id: 'template', name: 'Моя тренировка', weekday: null, createdAt: created, updatedAt: created,
       exercises: [{
@@ -45,8 +47,8 @@ function fixture(): WorkoutData {
       restEndsAt: '2026-11-10T10:01:30+05:00',
       exercises: [{
         id: 'session-exercise', exerciseId: 'custom-squat', name: 'Мои приседания', sets: [
-          { id: 'session-set-1', plannedReps: 10, plannedWeightKg: 0, actualReps: 10, actualWeightKg: 0, completed: true, updatedAt: started },
-          { id: 'session-set-2', plannedReps: 8, plannedWeightKg: null, actualReps: null, actualWeightKg: null, completed: false, updatedAt: started },
+          { id: 'session-set-1', plannedReps: 10, plannedWeightKg: 0, actualReps: 10, actualWeightKg: 0, completed: true, updatedAt: started, rir: 0 },
+          { id: 'session-set-2', plannedReps: 8, plannedWeightKg: null, actualReps: null, actualWeightKg: null, completed: false, updatedAt: started, rir: null },
         ],
       }],
     }],
@@ -72,7 +74,7 @@ test('backup round trip preserves every collection, stable IDs, timestamps, null
   assert.equal(backup.formatVersion, BACKUP_FORMAT_VERSION);
   assert.equal(backup.schemaVersion, WORKOUT_SCHEMA_VERSION);
   assert.deepEqual(backup.data, original);
-  assert.deepEqual(previewWorkoutBackup(backup), { exportedAt: now, exercises: 1, templates: 1, sessions: 1 });
+  assert.deepEqual(previewWorkoutBackup(backup), { exportedAt: now, exercises: 1, templates: 1, sessions: 1, bodyWeights: 1 });
   assert.equal(backup.data.sessions[0]?.exercises[0]?.sets[0]?.actualWeightKg, 0);
   assert.equal(backup.data.sessions[0]?.exercises[0]?.sets[1]?.actualWeightKg, null);
   assert.deepEqual(parseWorkoutBackup(`\uFEFF${text}`), backup);
@@ -93,6 +95,59 @@ test('unsupported versions, foreign formats and unknown fields are rejected rath
   assert.throws(() => parseWorkoutBackup('null'));
   assert.throws(() => parseWorkoutBackup('[]'));
   assert.throws(() => parseWorkoutBackup('{broken-json'), /JSON/);
+});
+
+test('restore a v1 workout file after saving a complete v2 recovery snapshot', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  await repository.replaceAll(fixture(), async () => {});
+  const oldExercise = customExercise('v1-exercise');
+  const envelope = {
+    kind: 'forma-workouts', formatVersion: 1, schemaVersion: 1, exportedAt: now,
+    data: { exercises: [oldExercise], templates: [], sessions: [{
+      id: 'v1-session', templateId: null, name: 'Тренировка', startedAt: started, finishedAt: now, timeZone: 'UTC',
+      status: 'completed', restEndsAt: null, exercises: [{ id: 'v1-entry', exerciseId: oldExercise.id, name: oldExercise.name, sets: [{
+        id: 'v1-set', plannedReps: 8, plannedWeightKg: 40, actualReps: 6, actualWeightKg: 40, completed: true, updatedAt: started,
+      }] }],
+    }] },
+  };
+  const { writer, writes } = recordingWriter();
+  await importWorkoutBackup(repository, writer, JSON.stringify(envelope), 'replace-all', now);
+  assert.deepEqual(parseWorkoutBackup(writes[0]!.text).data, fixture());
+  const data = await repository.exportData();
+  assert.deepEqual(data.settings, { showRir: false, showNotes: false });
+  assert.deepEqual(data.bodyWeights, []);
+  assert.deepEqual(data.exercises, [oldExercise]);
+  const set = data.sessions[0]?.exercises[0]?.sets[0];
+  assert.equal(set?.actualReps, 6);
+  assert.equal(set?.actualWeightKg, 40);
+  assert.equal(set?.rir, null);
+  assert.throws(() => parseWorkoutBackup(JSON.stringify({ ...envelope, schemaVersion: 2 })));
+  assert.throws(() => parseWorkoutBackup(JSON.stringify({ ...envelope, data: { ...envelope.data, bodyWeights: [] } })));
+});
+
+test('incomplete v2 copies and invalid progress data are rejected before automatic backup or mutation', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  const original = JSON.parse(serializeWorkoutBackup(fixture(), now));
+  const { writer, writes } = recordingWriter();
+  const before = await repository.exportData();
+  const bad = [
+    { ...original.data, bodyWeights: null },
+    { ...original.data, settings: undefined },
+    { ...original.data, settings: { showNotes: false, showRir: 1 } },
+    { ...original.data, bodyWeights: [{ date: '2026-02-30', weightKg: 70 }] },
+    { ...original.data, bodyWeights: [...original.data.bodyWeights, ...original.data.bodyWeights] },
+  ];
+  const invalidRir = structuredClone(original.data);
+  invalidRir.sessions[0].exercises[0].sets[0].rir = 4;
+  for (const data of [...bad, invalidRir]) {
+    await assert.rejects(importWorkoutBackup(repository, writer, JSON.stringify({ ...original, data }), 'replace-all', now));
+  }
+  assert.equal(writes.length, 0);
+  assert.deepEqual(await repository.exportData(), before);
 });
 
 test('invalid references, duplicated identifiers and invalid numeric values cannot be restored', () => {
@@ -187,7 +242,7 @@ test('automatic recovery copy contains latest current data; repeated imports pre
   const current = await repository.exportData();
   const { writer, writes } = recordingWriter();
   const first = await importWorkoutBackup(repository, writer, text, 'replace-all', now);
-  assert.deepEqual(first.restored, { exportedAt: now, exercises: 1, templates: 1, sessions: 1 });
+  assert.deepEqual(first.restored, { exportedAt: now, exercises: 1, templates: 1, sessions: 1, bodyWeights: 1 });
   assert.equal(first.recoveryFile.uri, 'file:///documents/backups/1.json');
   assert.equal(writes[0]?.reason, 'before-import');
   assert.deepEqual(parseWorkoutBackup(writes[0]!.text).data, current);

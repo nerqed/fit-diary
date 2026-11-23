@@ -1,7 +1,8 @@
 import { StyleSheet, Text, TextInput, View } from 'react-native';
+import type { ReactNode } from 'react';
 
 import type { Goal, NormCalculationParameters, ProfileField, ProfileFieldChange, ProfileScreenProps } from '../contracts/screens';
-import { Card, SectionHeader } from '../theme/components';
+import { Card, DemoNotice, SectionHeader } from '../theme/components';
 import { Colors, Radii, Spacing, Typography, fmt } from '../theme';
 import { ScreenShell } from './ScreenShell';
 import { Chip, PrimaryButton, Row } from './ui';
@@ -45,10 +46,12 @@ function FieldRow({ field, onChange }: { field: ProfileField; onChange: (c: Prof
 }
 
 export function ProfileScreen({
-  isDemo, fields, goal, calculationFields, calculatedBmrKcal, calculatedDailyKcal, onChangeField, onChangeGoal, onChangeCalculation, onSave,
-}: ProfileScreenProps) {
+  isDemo, fields, goal, calculationFields, calculatedBmrKcal, calculatedDailyKcal, onChangeField, onChangeGoal, onChangeCalculation, onSave, workoutPreferences,
+}: ProfileScreenProps & { workoutPreferences: ReactNode }) {
   return (
-    <ScreenShell title="Профиль" isDemo={isDemo}>
+    <ScreenShell title="Профиль">
+      {workoutPreferences}
+      {isDemo && <Row><Text style={styles.label}>Параметры профиля</Text><DemoNotice /></Row>}
       <Card>
         <Text style={styles.label}>Цель</Text>
         <Row>{goals.map((g) => (

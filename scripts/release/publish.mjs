@@ -13,9 +13,11 @@ if (info.tag !== process.env.RELEASE_TAG || info.commit !== process.env.COMMIT_S
 const client = githubClient();
 if (await client.resolveTag(info.tag) !== info.commit) throw new Error('Tag moved after build; refusing to publish.');
 const manifest = { tag: info.tag, commit: info.commit, ipa: info.ipa, sha256: info.sha256 };
+const releaseName = `Forma ${info.tag}`;
+const changelog = `https://github.com/${client.repository}/blob/${info.commit}/CHANGELOG.md`;
 const body = [
-  `# Forma ${info.tag} — технический каркас`, '',
-  'Неподписанное приложение для самостоятельной подписи через E Sign. Данные экранов демонстрационные.', '',
+  `# ${releaseName}`, '',
+  'Неподписанное приложение для iPhone. Подпишите IPA своим сертификатом в E Sign.', '',
   `- Версия: ${info.version} (${info.buildNumber})`, `- Коммит: ${info.commit}`,
   `- SHA-256 неподписанного IPA: \`${info.sha256}\``,
   `- Среда: ${info.runner} / ${info.architecture}; образ ${info.imageVersion ?? 'не указан'}`,
@@ -25,8 +27,7 @@ const body = [
   '## Что проверено', '',
   'Архив для iPhone/arm64, идентификаторы, встроенный JS-бандл, отсутствие подписи и provisioning profile, целостность ZIP и контрольная сумма.', '',
   '## Что ещё требуется проверить', '',
-  'Установка через E Sign и запуск на iPhone 15 Pro Max с iOS 26.6.1; переходы вкладок и повторный запуск в авиарежиме. Совместимость конкретного сертификата не подтверждена до проверки владельцем.', '',
-  'Реальный дневник, ИИ, камера, облако и дизайн пока не реализованы. После подписи контрольная сумма файла изменится.', '',
+  `Изменения версии и чек-лист проверки на iPhone доступны в [CHANGELOG.md](${changelog}).`, '',
   `<!-- forma-release:${JSON.stringify(manifest)} -->`,
 ].join('\n');
 
@@ -38,10 +39,10 @@ if (release) {
     console.log(`Already published and verified: ${release.html_url}`);
     process.exit(0);
   }
-  release = await client.request(`/releases/${release.id}`, { method: 'PATCH', body: { body, name: `Forma ${info.tag} — каркас`, target_commitish: info.commit } });
+  release = await client.request(`/releases/${release.id}`, { method: 'PATCH', body: { body, name: releaseName, target_commitish: info.commit } });
 } else {
   release = await client.request('/releases', { method: 'POST', body: {
-    tag_name: info.tag, target_commitish: info.commit, name: `Forma ${info.tag} — каркас`, body, draft: true, prerelease: false,
+    tag_name: info.tag, target_commitish: info.commit, name: releaseName, body, draft: true, prerelease: false,
   } });
 }
 

@@ -7,7 +7,11 @@ import {
   getExerciseRecords,
   getPreviousExerciseSession,
   getRestRemainingSeconds,
+  getSessionSummary,
+  getWeightTrend,
 } from '../src/features/workouts/analytics';
+import { isBodyweightExercise, suggestWeights } from '../src/features/workouts/progression';
+import { addDays, formatDay, sessionDay, workoutStart } from '../src/features/workouts/workoutDates';
 import type { PerformedSet, SessionExercise, WorkoutSession } from '../src/features/workouts/model';
 
 const start = '2026-11-10T10:00:00+05:00';
@@ -162,4 +166,87 @@ test('malformed completed results fail explicitly instead of producing NaN/Infin
   assert.throws(() => getExerciseHistory([badWeight], 'squat'), RangeError);
   assert.throws(() => getExerciseRecords([badReps], 'squat', 8), RangeError);
   assert.throws(() => getExerciseHistory([badTime], 'squat'), RangeError);
+});
+
+test('weight suggestions require all planned sets and use actual weights and the correct equipment step', () => {
+  const inputs = [set('a', 60, 8), { ...set('b', 55, 11), plannedReps: 10 }];
+  const suggested = (id: string, name: string, previous: readonly PerformedSet[]) =>
+    [...suggestWeights(id, name, previous, false).values()];
+  assert.deepEqual(suggested('builtin:bench-press', 'Жим', inputs), [62.5, 57.5]);
+  assert.deepEqual(suggested('builtin:hammer-curl', 'Молотки', inputs), [61, 56]);
+  assert.deepEqual(suggested('custom', 'Жим гантели лёжа', inputs), [61, 56]);
+  assert.deepEqual(suggested('bench', 'Жим', [inputs[0]!, set('b', 55, 7)]), [60, 55]);
+  assert.deepEqual(suggested('bench', 'Жим', [inputs[0]!, set('b', null, null, false)]), [60]);
+  assert.deepEqual(suggested('bench', 'Жим', [inputs[0]!, set('b', 55, null, false)]), [60, 55]);
+  assert.deepEqual(suggested('bench', 'Жим', [set('a', null, 8)]), []);
+  assert.deepEqual(suggested('bench', 'Жим', []), []);
+  assert.equal(isBodyweightExercise('builtin:crunch', 'Скручивания'), true);
+  assert.deepEqual(suggested('builtin:pull-up', 'Подтягивания', [set('a', 0, 8), set('b', 5, 8)]), [0, 7.5]);
+});
+
+test('optional RIR increases only with spare reps on every successful set; missing RIR and missed reps keep the load', () => {
+  const first = { ...set('a', 40, 8), rir: 3 };
+  const second = { ...set('b', 50, 8), rir: 2 };
+  const weights = (b: PerformedSet, enabled = true) => [...suggestWeights('bench', 'Жим', [first, b], enabled).values()];
+  assert.deepEqual(weights(second), [42.5, 52.5]);
+  assert.deepEqual(weights({ ...second, rir: 1 }), [40, 50]);
+  assert.deepEqual(weights({ ...second, rir: 0, actualReps: 7 }), [40, 50]);
+  assert.deepEqual(weights(set('b', 50, 8)), [40, 50]);
+  assert.deepEqual(weights({ ...second, rir: 0 }, false), [42.5, 52.5]);
+});
+
+test('session summary compares the same rep counts, preserves partial volume and identifies strict records as of that session', () => {
+  const older = session('prior', [exercise('p', 'Жим', [set('s1', 60, 8), set('s2', 55, 10)])]);
+  const newer = session('now', [
+    exercise('n1', 'Жим', [set('s3', 62.5, 8)]), exercise('n2', 'Жим', [set('s4', 55, 10)]),
+    exercise('b', 'Приседание', [set('s5', null, 12), set('s6', 100, 12, false)], 'new'),
+  ], { startedAt: '2026-11-12T10:00:00Z', finishedAt: '2026-11-12T10:30:00Z' });
+  const later = { ...older, id: 'later', startedAt: '2026-11-13T10:00:00Z', finishedAt: '2026-11-13T11:00:00Z',
+    exercises: [exercise('l', 'Жим', [set('s7', 75, 8)])] };
+  const result = getSessionSummary(newer, [later, newer, older]);
+  assert.equal(result.completedSets, 3);
+  assert.equal(result.totalSets, 4);
+  assert.deepEqual(result.volume, { amountKgReps: null, knownAmountKgReps: 1050, knownSets: 2, totalSets: 3, state: 'partial' });
+  assert.deepEqual(result.records, [
+    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'weight', reps: 8, weightKg: 62.5 },
+    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'volume', volumeKgReps: 1050 },
+  ]);
+  assert.equal(getSessionSummary(older, [newer]).records.length, 3, 'first recorded loads and complete volume establish records');
+  const tied = { ...newer, id: 'tied', startedAt: later.startedAt, finishedAt: later.finishedAt };
+  assert.deepEqual(getSessionSummary(tied, [newer, tied]).records, []);
+  assert.deepEqual(getSessionSummary({ ...newer, finishedAt: null, status: 'active' }, [older]).records, []);
+  const noLoad = session('abs', [exercise('e', 'Скручивания', [set('s', 0, 15)], 'builtin:crunch')]);
+  assert.deepEqual(getSessionSummary(noLoad, []).records, []);
+});
+
+test('body weight trend uses calendar windows, ignores missing days and recalculates after retrospective entries', () => {
+  const input = [
+    { date: '2026-11-15', weightKg: 72 }, { date: '2026-11-08', weightKg: 71 }, { date: '2026-11-01', weightKg: 70 },
+  ];
+  assert.equal(getWeightTrend(input, '2026-11-08').weeklyChangeKg, 1);
+  const changed = [...input, { date: '2026-11-02', weightKg: 77 }];
+  const trend = getWeightTrend(changed, '2026-11-08');
+  assert.deepEqual(trend.points.map((p) => [p.date, p.averageKg]), [
+    ['2026-11-01', 70], ['2026-11-02', 73.5], ['2026-11-08', 74],
+  ]);
+  assert.equal(trend.weeklyChangeKg, 4, 'compares the two seven-day averages, not individual weights');
+  assert.equal(getWeightTrend(changed).weeklyChangeKg, -2);
+  assert.equal(getWeightTrend(changed, '2026-11-23').weeklyChangeKg, null, 'no current-week measurements');
+  assert.equal(getWeightTrend(changed, '2026-11-02').weeklyChangeKg, null, 'no preceding window');
+  assert.deepEqual(getWeightTrend([]), { points: [], weeklyChangeKg: null });
+});
+
+test('workout days follow the stored time zone across UTC, leap days and DST, and reject invalid or future days', () => {
+  assert.equal(sessionDay({ startedAt: '2026-11-01T20:30:00Z', timeZone: 'Asia/Yekaterinburg' }), '2026-11-02');
+  assert.equal(addDays('2024-03-01', -1), '2024-02-29');
+  assert.equal(formatDay('2026-11-02'), '2 нояб');
+  const now = '2026-11-24T00:00:00Z';
+  for (const zone of ['Pacific/Kiritimati', 'America/Los_Angeles', 'Europe/Paris']) {
+    const start = workoutStart('2026-03-29', now, zone, []);
+    assert.equal(start.backdated, true);
+    assert.equal(sessionDay({ ...start, timeZone: zone }), '2026-03-29');
+  }
+  assert.throws(() => workoutStart('2026-11-31', now, 'UTC', []));
+  assert.throws(() => workoutStart('2026-12-01', now, 'UTC', []));
+  assert.deepEqual(workoutStart('2026-11-24', now, 'UTC', []), { startedAt: now, backdated: false });
 });

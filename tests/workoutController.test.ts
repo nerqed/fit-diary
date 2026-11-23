@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createWorkoutRepository } from '../src/data/sqlite/workoutRepository';
 import { createWorkoutController, sessionView } from '../src/features/workouts/controller';
 import type { WorkoutSession } from '../src/features/workouts/model';
+import { sessionDay } from '../src/features/workouts/workoutDates';
 import { createSqliteTestDatabase } from './sqliteTestDatabase';
 
 test('controller exposes durable data after successful actions and keeps prior data after rejected input', async () => {
@@ -25,9 +26,18 @@ test('controller exposes durable data after successful actions and keeps prior d
     await controller.startSession(draft.id, 'intent-session');
     assert.equal(controller.getSnapshot().data?.sessions.length, 1);
     const setId = session.exercises[0]!.sets[0]!.id;
-    await controller.updateSet(session.id, setId, { actualReps: 8, actualWeightKg: 40, completed: true });
-    await controller.startRest(session.id, 90);
+    const result = { actualReps: 8, actualWeightKg: 40, completed: true };
+    await controller.updateSet(session.id, setId, result, 90);
     assert.equal(controller.getSessionView(session.id, Date.parse(clock) + 30_000)?.restRemainingSeconds, 60);
+    const initialDeadline = controller.getSessionView(session.id, Date.parse(clock))!.session.restEndsAt!;
+    clock = '2026-11-17T11:00:04Z';
+    await controller.updateSet(session.id, setId, result, 90);
+    assert.equal(controller.getSessionView(session.id, Date.parse(clock))?.session.restEndsAt, initialDeadline);
+    await Promise.all([controller.extendRest(session.id, 15), controller.extendRest(session.id, 15)]);
+    assert.equal(controller.getSessionView(session.id, Date.parse(clock))?.restRemainingSeconds, 116);
+    assert.equal(await controller.stopRest(session.id, initialDeadline), false, 'old timer cannot stop the extension');
+    assert.equal(await controller.stopRest(session.id), true);
+    assert.equal(await controller.extendRest(session.id, 15), false, 'extension cannot resurrect a skipped timer');
     const saved = controller.getSnapshot().data;
     await assert.rejects(controller.updateSet(session.id, setId, { actualReps: 8, actualWeightKg: -1, completed: true }));
     assert.deepEqual(controller.getSnapshot().data, saved);
@@ -58,5 +68,81 @@ test('previous values beside sets match exercise occurrence and set position, no
   };
   const view = sessionView(current, [previous, current], Date.parse(current.startedAt));
   assert.deepEqual(view.exercises[0]!.sets.map((set) => set.previous?.actualWeightKg ?? null), [30, 35, null]);
+  assert.deepEqual(view.exercises[0]!.sets.map((set) => set.suggestedWeightKg), [32.5, 37.5, null]);
   assert.equal(view.exercises[1]!.sets[0]!.previous?.actualWeightKg, 40);
+  assert.equal(view.exercises[1]!.sets[0]!.suggestedWeightKg, 42.5);
+});
+
+test('copy retry after a committed write and a failed refresh recovers the one saved copy', async () => {
+  const database = createSqliteTestDatabase();
+  const repository = createWorkoutRepository(database);
+  let failRead = false;
+  const controller = createWorkoutController({ ...repository, async exportData() {
+    if (failRead) { failRead = false; throw new Error('Чтение недоступно'); }
+    return repository.exportData();
+  } }, { now: () => '2026-11-24T09:00:00Z', id: () => 'template', timeZone: () => 'UTC' });
+  try {
+    await controller.load();
+    const source = controller.newTemplate();
+    await controller.saveTemplate({ ...source, name: 'Пресс', exercises: [
+      { id: 'entry', exerciseId: 'builtin:crunch', sets: [{ id: 'set', reps: 12, weightKg: null }] },
+    ] });
+    failRead = true;
+    await assert.rejects(controller.copyTemplate(source.id, 'copy'), /Чтение недоступно/);
+    assert.equal((await repository.listTemplates()).length, 2);
+    await assert.rejects(controller.copyTemplate('foreign-template', 'copy'), /другому шаблону/);
+    const [first, second] = await Promise.all([
+      controller.copyTemplate(source.id, 'copy'), controller.copyTemplate(source.id, 'copy'),
+    ]);
+    assert.equal(first.id, 'copy');
+    assert.deepEqual(second, first);
+    assert.equal(controller.getSnapshot().data?.templates.length, 2);
+  } finally { database.close(); }
+});
+
+test('retrospective sessions survive a controller restart and edits recalculate following hints; live sessions may cross midnight', async () => {
+  const database = createSqliteTestDatabase();
+  const repository = createWorkoutRepository(database);
+  let clock = '2026-11-24T18:58:00Z'; // 23:58 local
+  const dependencies = { now: () => clock, id: () => 'template', timeZone: () => 'Asia/Yekaterinburg' };
+  let controller = createWorkoutController(repository, dependencies);
+  try {
+    await controller.load();
+    const template = { ...controller.newTemplate(), name: 'Жим', exercises: [
+      { id: 'template-exercise', exerciseId: 'builtin:bench-press', sets: [{ id: 'template-set', reps: 8, weightKg: null }] },
+    ] };
+    await controller.saveTemplate(template);
+    const past = await controller.startSession(template.id, 'past', '2026-11-02');
+    const setId = past.exercises[0]!.sets[0]!.id;
+    await controller.updateSet(past.id, setId, { actualWeightKg: 50, actualReps: 8, completed: true, rir: 3 });
+    controller = createWorkoutController(repository, dependencies);
+    await controller.load();
+    await controller.finishSession(past.id, 'completed');
+    const saved = controller.getSessionView(past.id, Date.parse(clock))!.session;
+    assert.equal(saved.finishedAt, saved.startedAt);
+    assert.equal(sessionDay(saved), '2026-11-02');
+    await controller.saveSettings({ showRir: true, showNotes: false });
+    const live = await controller.repeatSession(past.id, 'live');
+    const secondPast = await controller.startSession(template.id, 'second-past', '2026-11-02');
+    assert.equal(secondPast.status, 'completed', 'backfilling leaves the live session active');
+    assert.ok(Date.parse(secondPast.startedAt) > Date.parse(past.startedAt), 'two entries on one retrospective day retain order');
+    assert.equal((await repository.getSession(live.id))?.status, 'active');
+    const secondSet = secondPast.exercises[0]!.sets[0]!.id;
+    await controller.updateSet(secondPast.id, secondSet, { actualWeightKg: 45, actualReps: null, completed: false });
+    const hint = () => controller.getSessionView(live.id, Date.parse(clock))!.exercises[0]!.sets[0]!.suggestedWeightKg;
+    assert.equal(hint(), 45, 'a known weight from the latest partial entry carries over without an increment');
+    await controller.updateSet(secondPast.id, secondSet, { actualWeightKg: 50, actualReps: 8, completed: true, rir: 3 });
+    assert.equal(hint(), 52.5);
+    await controller.updateSet(past.id, setId, { actualWeightKg: 50, actualReps: 7, completed: true, rir: 0 });
+    await controller.updateSet(secondPast.id, secondSet, { actualWeightKg: 50, actualReps: 7, completed: true, rir: 0 });
+    assert.equal(hint(), 50);
+    assert.equal(controller.getProgress('builtin:bench-press', 8).records.bestWeightAtReps, null);
+    clock = '2026-11-24T19:30:00Z'; // 00:30 the following day
+    await controller.finishSession(live.id, 'completed');
+    assert.equal(controller.getSessionView(live.id, Date.parse(clock))?.session.finishedAt, clock);
+    await controller.saveBodyWeight('2026-11-02', 70);
+    await controller.saveBodyWeight('2026-11-02', 71);
+    await assert.rejects(controller.saveBodyWeight('2026-11-26', 72));
+    assert.deepEqual(controller.getSnapshot().data?.bodyWeights, [{ date: '2026-11-02', weightKg: 71 }]);
+  } finally { database.close(); }
 });

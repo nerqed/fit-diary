@@ -1,7 +1,7 @@
 import type { SqlDatabase } from './connection';
 import { builtinExercises } from '../exercises';
 
-export const WORKOUT_SCHEMA_VERSION = 1;
+export const WORKOUT_SCHEMA_VERSION = 2;
 
 const migrations = [
   `CREATE TABLE exercises (
@@ -47,6 +47,18 @@ const migrations = [
     actual_weight_kg REAL CHECK(actual_weight_kg IS NULL OR (actual_weight_kg >= 0 AND actual_weight_kg <= 10000)),
     completed INTEGER NOT NULL CHECK(completed IN (0,1)), updated_at TEXT NOT NULL,
     CHECK(completed = 0 OR (actual_reps IS NOT NULL AND actual_reps > 0)), UNIQUE(session_exercise_id,position)
+  );`,
+  `ALTER TABLE exercises ADD COLUMN note TEXT;
+  ALTER TABLE session_sets ADD COLUMN rir INTEGER CHECK(rir IS NULL OR (typeof(rir)='integer' AND rir BETWEEN 0 AND 3));
+  ALTER TABLE sessions ADD COLUMN backdated INTEGER NOT NULL DEFAULT 0 CHECK(backdated IN (0,1));
+  ALTER TABLE sessions ADD COLUMN repeated_from_id TEXT REFERENCES sessions(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+  CREATE TABLE body_weights (
+    date TEXT PRIMARY KEY NOT NULL, weight_kg REAL NOT NULL CHECK(weight_kg > 0 AND weight_kg <= 10000)
+  );
+  CREATE TABLE workout_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    show_rir INTEGER NOT NULL CHECK(show_rir IN (0,1)),
+    show_notes INTEGER NOT NULL CHECK(show_notes IN (0,1))
   );`,
 ] as const;
 

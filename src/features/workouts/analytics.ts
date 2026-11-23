@@ -1,4 +1,6 @@
-import type { PerformedSet, WorkoutSession, WorkoutTimestamp } from './model';
+import type { BodyWeight, PerformedSet, WorkoutSession, WorkoutTimestamp } from './model';
+import { isBodyweightExercise } from './progression';
+import { addDays, validateDay } from './workoutDates';
 
 /** This is external-load volume, not total work or body mass moved. */
 export type ExerciseVolume = Readonly<{
@@ -71,7 +73,7 @@ function validateActualValues(set: PerformedSet): void {
   if (set.actualReps !== null) requireReps(set.actualReps);
 }
 
-function volumeOf(sets: readonly ExerciseHistorySet[]): ExerciseVolume {
+function volumeOf(sets: readonly PerformedSet[]): ExerciseVolume {
   const completed = sets.filter((set) => set.completed);
   let knownSets = 0;
   let knownAmountKgReps = 0;
@@ -140,12 +142,19 @@ export function getPreviousExerciseSession(
   excludeSessionId?: string,
 ): ExerciseHistoryRow | null {
   const cutoff = instant(beforeTimestamp);
-  const history = getExerciseHistory(sessions, exerciseId).filter((row) => (
-    row.sessionId !== excludeSessionId
-    && instant(row.startedAt) < cutoff
-    && instant(row.finishedAt) <= cutoff
-  ));
-  return history[history.length - 1] ?? null;
+  let latest: WorkoutSession | undefined;
+  let latestStart = -Infinity;
+  for (const session of sessions) {
+    if (session.id === excludeSessionId || session.status !== 'completed' || !session.finishedAt) continue;
+    const start = instant(session.startedAt);
+    if (start >= cutoff || start < latestStart || instant(session.finishedAt) > cutoff) continue;
+    if (start === latestStart && latest && latest.id >= session.id) continue;
+    if (session.exercises.some((exercise) => exercise.exerciseId === exerciseId)) {
+      latest = session;
+      latestStart = start;
+    }
+  }
+  return latest ? getExerciseHistory([latest], exerciseId)[0] ?? null : null;
 }
 
 function bestAtReps(row: ExerciseHistoryRow, fixedReps: number): number | null {
@@ -158,13 +167,9 @@ function bestAtReps(row: ExerciseHistoryRow, fixedReps: number): number | null {
   return best;
 }
 
-export function getBestWeightSeries(
-  sessions: readonly WorkoutSession[],
-  exerciseId: string,
-  fixedReps: number,
-): readonly BestWeightPoint[] {
+function weightSeriesIn(history: readonly ExerciseHistoryRow[], fixedReps: number): readonly BestWeightPoint[] {
   requireReps(fixedReps);
-  return getExerciseHistory(sessions, exerciseId).map((row) => ({
+  return history.map((row) => ({
     sessionId: row.sessionId,
     startedAt: row.startedAt,
     timeZone: row.timeZone,
@@ -173,31 +178,110 @@ export function getBestWeightSeries(
   }));
 }
 
+export function getBestWeightSeries(sessions: readonly WorkoutSession[], exerciseId: string, fixedReps: number) {
+  return weightSeriesIn(getExerciseHistory(sessions, exerciseId), fixedReps);
+}
+
 /** Record definitions are explicit. There is no estimated 1RM or incomplete-volume record. */
-export function getExerciseRecords(
-  sessions: readonly WorkoutSession[],
-  exerciseId: string,
-  fixedReps: number,
-): ExerciseRecords {
-  requireReps(fixedReps);
-  let bestWeightAtReps: WeightRecord | null = null;
+function recordsIn(history: readonly ExerciseHistoryRow[]) {
+  const weights = new Map<number, WeightRecord>();
   let bestCompleteVolume: VolumeRecord | null = null;
-  for (const row of getExerciseHistory(sessions, exerciseId)) {
-    const best = bestAtReps(row, fixedReps);
-    // Strict comparison intentionally keeps the first chronological record on equal results.
-    if (best !== null && (bestWeightAtReps === null || best > bestWeightAtReps.weightKg)) {
-      bestWeightAtReps = {
-        sessionId: row.sessionId, startedAt: row.startedAt, timeZone: row.timeZone, fixedReps, weightKg: best,
-      };
+  for (const row of history) {
+    const bodyweight = isBodyweightExercise(row.exerciseId, row.exerciseNames[0] ?? '');
+    for (const set of row.sets) {
+      const { actualReps, actualWeightKg } = set;
+      if (!set.completed || actualReps === null || actualWeightKg === null) continue;
+      if (bodyweight && actualWeightKg === 0) continue; // No external load to compare.
+      const best = weights.get(actualReps);
+      if (!best || actualWeightKg > best.weightKg) {
+        weights.set(actualReps, { sessionId: row.sessionId, startedAt: row.startedAt,
+          timeZone: row.timeZone, fixedReps: actualReps, weightKg: actualWeightKg });
+      }
     }
     const volume = row.volume.amountKgReps;
-    if (volume !== null && (bestCompleteVolume === null || volume > bestCompleteVolume.volumeKgReps)) {
+    if (volume !== null && !(bodyweight && volume === 0) && (bestCompleteVolume === null || volume > bestCompleteVolume.volumeKgReps)) {
       bestCompleteVolume = {
         sessionId: row.sessionId, startedAt: row.startedAt, timeZone: row.timeZone, volumeKgReps: volume,
       };
     }
   }
-  return { bestWeightAtReps, bestCompleteVolume };
+  return { weights, bestCompleteVolume };
+}
+
+function exerciseRecordsIn(history: readonly ExerciseHistoryRow[], fixedReps: number): ExerciseRecords {
+  requireReps(fixedReps);
+  const { weights, bestCompleteVolume } = recordsIn(history);
+  return { bestWeightAtReps: weights.get(fixedReps) ?? null, bestCompleteVolume };
+}
+
+export function getExerciseRecords(sessions: readonly WorkoutSession[], exerciseId: string, fixedReps: number) {
+  return exerciseRecordsIn(getExerciseHistory(sessions, exerciseId), fixedReps);
+}
+
+export function getExerciseProgress(sessions: readonly WorkoutSession[], exerciseId: string, fixedReps: number) {
+  const history = getExerciseHistory(sessions, exerciseId);
+  return { history, bestWeights: weightSeriesIn(history, fixedReps), records: exerciseRecordsIn(history, fixedReps) };
+}
+
+export type SessionRecord = Readonly<{ exerciseId: string; exerciseName: string }> & (
+  | Readonly<{ kind: 'weight'; reps: number; weightKg: number }>
+  | Readonly<{ kind: 'volume'; volumeKgReps: number }>
+);
+
+export function getSessionSummary(session: WorkoutSession, sessions: readonly WorkoutSession[]) {
+  const sets = session.exercises.flatMap((exercise) => exercise.sets);
+  const volume = volumeOf(sets);
+  const records: SessionRecord[] = [];
+  if (session.status === 'completed') {
+    const start = instant(session.startedAt);
+    const earlier = sessions.filter((other) => other.id !== session.id && other.status === 'completed'
+      && other.finishedAt !== null && instant(other.finishedAt) <= start
+      && (instant(other.startedAt) < start || other.id < session.id));
+    const exerciseNames = new Map(session.exercises.map((exercise) => [exercise.exerciseId, exercise.name]));
+    for (const [exerciseId, exerciseName] of exerciseNames) {
+      const previous = recordsIn(getExerciseHistory(earlier, exerciseId));
+      const current = recordsIn(getExerciseHistory([session], exerciseId));
+      for (const [reps, { weightKg }] of current.weights) {
+        const best = previous.weights.get(reps);
+        if (!best || weightKg > best.weightKg) records.push({ exerciseId, exerciseName, kind: 'weight', reps, weightKg });
+      }
+      const best = current.bestCompleteVolume;
+      if (best && (!previous.bestCompleteVolume || best.volumeKgReps > previous.bestCompleteVolume.volumeKgReps)) {
+        records.push({ exerciseId, exerciseName, kind: 'volume', volumeKgReps: best.volumeKgReps });
+      }
+    }
+  }
+  return { completedSets: volume.totalSets, totalSets: sets.length, volume, records };
+}
+
+export type WeightTrendPoint = BodyWeight & Readonly<{ averageKg: number }>;
+
+function averageWeightIn(points: readonly BodyWeight[], firstDay: string, lastDay: string) {
+  const entries = points.filter((point) => point.date >= firstDay && point.date <= lastDay);
+  return entries.length ? entries.reduce((sum, point) => sum + point.weightKg, 0) / entries.length : null;
+}
+
+/** Each window covers seven calendar days. Days without weigh-ins carry no weight in the average. */
+export function getWeightTrend(entries: readonly BodyWeight[], asOfDay?: string) {
+  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+  const end = asOfDay === undefined ? sorted.at(-1)?.date : validateDay(asOfDay);
+  const points: WeightTrendPoint[] = [];
+  if (!end) return { points, weeklyChangeKg: null };
+  let windowStart = 0;
+  let windowSum = 0;
+  for (const entry of sorted) {
+    if (entry.date > end) break;
+    const firstDay = addDays(entry.date, -6);
+    while (windowStart < points.length && points[windowStart]!.date < firstDay) {
+      windowSum -= points[windowStart++]!.weightKg;
+    }
+    windowSum += entry.weightKg;
+    points.push({ ...entry, averageKg: windowSum / (points.length - windowStart + 1) });
+  }
+  const current = averageWeightIn(points, addDays(end, -6), end);
+  const previous = averageWeightIn(points, addDays(end, -13), addDays(end, -7));
+  const weeklyChangeKg = current !== null && previous !== null ? current - previous : null;
+  return { points, weeklyChangeKg };
 }
 
 /** Inject the current device-clock milliseconds. No interval survives app suspension. */

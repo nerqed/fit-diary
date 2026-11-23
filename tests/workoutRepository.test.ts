@@ -47,7 +47,7 @@ test('migration persists data and seeds only once, including after a full restor
     database.close();
     database = createSqliteTestDatabase(filename); repository = createWorkoutRepository(database);
     assert.deepEqual(await repository.exportData(), saved);
-    const empty: WorkoutData = { exercises: [], templates: [], sessions: [] };
+    const empty: WorkoutData = { exercises: [], templates: [], sessions: [], bodyWeights: [], settings: { showRir: false, showNotes: false } };
     await repository.replaceAll(empty, async () => undefined);
     database.close(); database = createSqliteTestDatabase(filename); repository = createWorkoutRepository(database);
     assert.deepEqual(await repository.exportData(), empty, 'reopen must not seed over an intentionally restored snapshot');
@@ -92,6 +92,179 @@ test('rejects newer database versions without deleting existing tables', async (
   } finally { database.close(); }
 });
 
+test('v1 history survives an interrupted upgrade to v2, with optional features initially off', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const interrupted: SqlDatabase = {
+    ...database,
+    transaction: (work) => database.transaction((connection) => work({
+      ...connection,
+      async exec(sql) {
+        if (sql === 'PRAGMA user_version = 2') throw new Error('upgrade interrupted');
+        return connection.exec(sql);
+      },
+    })),
+  };
+  await assert.rejects(createWorkoutRepository(interrupted).initialize(), /interrupted/);
+  assert.equal((await database.all<{ user_version: number }>('PRAGMA user_version'))[0]?.user_version, 1);
+  assert.equal((await database.all<{ name: string }>('PRAGMA table_info(session_sets)')).some((column) => column.name === 'rir'), false);
+  await database.run("INSERT INTO sessions(id,name,started_at,finished_at,time_zone,status) VALUES('old','История',?,?,'UTC','completed')", [startedAt, finishedAt]);
+  await database.run("INSERT INTO session_exercises(id,session_id,exercise_id,name,position) VALUES('old-entry','old','builtin:bench-press','Жим',0)");
+  await database.run("INSERT INTO session_sets(id,session_exercise_id,position,planned_reps,actual_reps,actual_weight_kg,completed,updated_at) VALUES('old-set','old-entry',0,8,7,40,1,?)", [updatedAt]);
+
+  const repository = createWorkoutRepository(database);
+  const data = await repository.exportData();
+  assert.equal(data.sessions[0]?.exercises[0]?.sets[0]?.actualReps, 7);
+  assert.equal(data.sessions[0]?.exercises[0]?.sets[0]?.actualWeightKg, 40);
+  assert.equal(data.sessions[0]?.exercises[0]?.sets[0]?.rir, null);
+  assert.deepEqual(data.settings, { showRir: false, showNotes: false });
+  assert.deepEqual(data.bodyWeights, []);
+  const facts = { actualReps: 8, actualWeightKg: 40, completed: true };
+  const later = '2026-11-19T12:00:00Z';
+  await repository.updateSet('old', 'old-set', { ...facts, rir: 0 }, later);
+  await repository.updateSet('old', 'old-set', facts, later);
+  assert.equal((await repository.getSession('old'))?.exercises[0]?.sets[0]?.rir, 0, 'editing reps must preserve hidden RIR');
+  await repository.updateSet('old', 'old-set', { ...facts, rir: null }, later);
+  assert.equal((await repository.getSession('old'))?.exercises[0]?.sets[0]?.rir, null);
+});
+
+test('body weight is upserted by local day, settings and stable exercise notes persist', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  await repository.saveBodyWeight('2026-11-18', 77);
+  await repository.saveBodyWeight('2026-11-17', 76.5);
+  await repository.saveBodyWeight('2026-11-18', 77.2);
+  await assert.rejects(repository.saveBodyWeight('2026-02-29', 75));
+  await assert.rejects(repository.saveBodyWeight('2026-11-18', 0));
+  const [exercise] = await repository.listExercises();
+  await repository.saveExercise({ ...exercise!, note: 'сиденье на 4' });
+  await repository.saveSettings({ showNotes: true, showRir: false });
+  const data = await repository.exportData();
+  assert.deepEqual(data.bodyWeights, [{ date: '2026-11-17', weightKg: 76.5 }, { date: '2026-11-18', weightKg: 77.2 }]);
+  assert.deepEqual(data.settings, { showNotes: true, showRir: false });
+  assert.equal(data.exercises.find((item) => item.id === exercise!.id)?.note, 'сиденье на 4');
+  await repository.saveExercise({ ...exercise!, note: '' });
+  assert.equal((await repository.listExercises())[0]?.note, undefined);
+});
+
+test('repeat uses the completed snapshot after deleting its template and exercise replacement resets only its sets', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  const plan = template();
+  await repository.saveTemplate(plan);
+  await repository.startSession(plan.id, 'original', startedAt, 'UTC');
+  const facts = { actualReps: 7, actualWeightKg: 42, completed: true, rir: 2 };
+  await repository.updateSet('original', 'original:set:0:0', facts, updatedAt);
+  await repository.finishSession('original', 'completed', finishedAt);
+  await repository.deleteTemplate(plan.id);
+  const nextDay = '2026-11-18T11:00:00Z';
+  const repeat = await repository.repeatSession('original', 'repeat', nextDay, 'UTC');
+  assert.equal(repeat.templateId, null);
+  assert.equal(repeat.name, plan.name);
+  assert.equal(repeat.status, 'active');
+  assert.equal(repeat.exercises[0]?.sets[0]?.plannedReps, 8);
+  assert.equal(repeat.exercises[0]?.sets[0]?.actualReps, null);
+  assert.equal(repeat.exercises[0]?.sets[0]?.rir, null);
+  assert.deepEqual(await repository.repeatSession('original', 'repeat', updatedAt, 'UTC'), repeat);
+  await assert.rejects(repository.repeatSession('original', 'second', nextDay, 'UTC'), /текущую/);
+  await assert.rejects(repository.repeatSession('second', 'repeat', nextDay, 'UTC'), /другой/);
+
+  await repository.updateSet('repeat', 'repeat:set:0:0', facts, nextDay);
+  await repository.updateSet('repeat', 'repeat:set:1:0', facts, nextDay);
+  await assert.rejects(repository.replaceSessionExercise('repeat', 'original:exercise:0', 'builtin:bench-press'));
+  await repository.replaceSessionExercise('repeat', 'repeat:exercise:0', 'builtin:bench-press');
+  const replaced = await repository.getSession('repeat');
+  const first = replaced!.exercises[0]!;
+  assert.equal(first.exerciseId, 'builtin:bench-press');
+  assert.equal(first.sets.length, 2);
+  assert.deepEqual(first.sets.map((set) => [set.completed, set.plannedWeightKg, set.actualWeightKg, set.actualReps, set.rir]),
+    [[false, null, null, null, null], [false, null, null, null, null]]);
+  assert.equal(replaced?.exercises[1]?.sets[0]?.rir, 2);
+  assert.equal((await repository.getSession('original'))?.exercises[0]?.sets[0]?.actualReps, 7);
+  const snapshot = await repository.exportData();
+  await repository.replaceAll(snapshot, async () => {});
+  assert.deepEqual(await repository.getSession('repeat'), replaced, 'restore accepts repeat before source in newest-first backups');
+});
+
+test('expiring an old rest timer cannot clear a replacement or notify after finish', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  await repository.saveTemplate(template());
+  await repository.startSession('template-a', 'running', startedAt, 'UTC');
+  const old = '2026-11-17T11:01:00+05:00', fresh = '2026-11-17T11:01:15+05:00';
+  assert.equal(await repository.setRestDeadline('running', old), true);
+  assert.equal(await repository.setRestDeadline('running', fresh, old), true);
+  assert.equal(await repository.setRestDeadline('running', null, old), false);
+  assert.equal((await repository.getSession('running'))?.restEndsAt, fresh);
+  await repository.finishSession('running', 'completed', finishedAt);
+  assert.equal(await repository.setRestDeadline('running', null, fresh), false);
+});
+
+test('confirming a live set commits its rest timer atomically, once per completion and never during retro input', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  await repository.saveTemplate(template());
+  const live = await repository.startSession('template-a', 'live', startedAt, 'UTC');
+  const setId = live.exercises[0]!.sets[0]!.id;
+  const facts = { actualReps: 8, actualWeightKg: 40, completed: true };
+  const first = '2026-11-17T11:06:30+05:00';
+  const later = '2026-11-17T11:08:00+05:00';
+  await database.exec(`CREATE TEMP TRIGGER interrupt_timer BEFORE UPDATE OF rest_ends_at ON sessions
+    BEGIN SELECT RAISE(ABORT,'timer write failed'); END;`);
+  await assert.rejects(repository.updateSet(live.id, setId, facts, updatedAt, first), /timer write failed/);
+  assert.deepEqual(await repository.getSession(live.id), live);
+  await database.exec('DROP TRIGGER interrupt_timer');
+
+  await repository.updateSet(live.id, setId, facts, updatedAt, first);
+  assert.equal((await repository.getSession(live.id))?.restEndsAt, first);
+  await repository.updateSet(live.id, setId, facts, updatedAt, later);
+  assert.equal((await repository.getSession(live.id))?.restEndsAt, first);
+  await repository.setRestDeadline(live.id, null);
+  await repository.updateSet(live.id, setId, { ...facts, rir: 3 }, updatedAt, later);
+  assert.equal((await repository.getSession(live.id))?.restEndsAt, null);
+
+  const past = await repository.startSession('template-a', 'past', '2026-11-10T12:00:00Z', 'UTC', true);
+  await repository.updateSet(past.id, past.exercises[0]!.sets[0]!.id, facts, updatedAt, later);
+  const saved = await repository.getSession(past.id);
+  assert.equal(saved?.exercises[0]?.sets[0]?.completed, true);
+  assert.equal(saved?.restEndsAt, null);
+});
+
+test('backdated starts and repeats remain editable alongside a live workout and its rest timer', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  await repository.saveTemplate(template());
+  const facts = { actualReps: 9, actualWeightKg: 40, completed: true, rir: 2 };
+  await repository.startSession('template-a', 'live', startedAt, 'UTC');
+  await repository.updateSet('live', 'live:set:0:0', facts, updatedAt);
+  await repository.setRestDeadline('live', '2026-11-17T11:07:00+05:00');
+  const live = await repository.getSession('live');
+
+  const firstDay = '2026-11-10T12:00:00Z';
+  const secondDay = '2026-11-12T12:00:00Z';
+  const past = await repository.startSession('template-a', 'past', firstDay, 'UTC', true);
+  const repeated = await repository.repeatSession(past.id, 'past-repeat', secondDay, 'UTC', true);
+  for (const [session, day] of [[past, firstDay], [repeated, secondDay]] as const) {
+    assert.equal(session.backdated, true);
+    assert.equal(session.status, 'completed');
+    assert.equal(session.startedAt, day);
+    assert.equal(session.finishedAt, day);
+    const [set] = session.exercises[0]!.sets;
+    assert.equal(set?.completed, false);
+    await repository.updateSet(session.id, set!.id, facts, updatedAt);
+    const edited = await repository.getSession(session.id);
+    assert.equal(edited?.finishedAt, day);
+    assert.equal(edited?.exercises[0]?.sets[0]?.actualReps, 9);
+  }
+  assert.deepEqual((await repository.listSessions()).filter((session) => session.status === 'active'), [live]);
+  await assert.rejects(repository.startSession('template-a', 'another-live', startedAt, 'UTC'), /текущую/);
+});
+
 test('template CRUD/copy preserve order, unique IDs and historical snapshots', async () => {
   const database = createSqliteTestDatabase(); const repository = createWorkoutRepository(database);
   try {
@@ -130,7 +303,7 @@ test('custom exercises are editable/archiveable without changing historical name
   } finally { database.close(); }
 });
 
-test('session/set retries are idempotent, partial facts survive, finish locks writes and clears timer', async () => {
+test('session/set retries are idempotent, partial facts survive, finish clears timer and allows retroactive set edits', async () => {
   const database = createSqliteTestDatabase(); const repository = createWorkoutRepository(database);
   try {
     await repository.saveTemplate(template());
@@ -151,7 +324,13 @@ test('session/set retries are idempotent, partial facts survive, finish locks wr
     await repository.finishSession('session-a', 'completed', '2026-11-17T13:00:00+05:00');
     assert.equal((await repository.getSession('session-a'))?.finishedAt, finishedAt);
     assert.equal((await repository.getSession('session-a'))?.restEndsAt, null);
-    await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:1', result, finishedAt), /завершена/);
+    const later = '2026-11-20T09:00:00+05:00';
+    await repository.updateSet('session-a', 'session-a:set:0:1', result, later);
+    const edited = await repository.getSession('session-a');
+    assert.equal(edited?.finishedAt, finishedAt);
+    assert.equal(edited?.exercises[0]?.sets[1]?.updatedAt, later);
+    assert.equal(edited?.exercises[0]?.sets[1]?.completed, true);
+    await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:1', result, finishedAt), /более новое/);
     await assert.rejects(repository.setRestDeadline('session-a', finishedAt), /завершена/);
   } finally { database.close(); }
 });

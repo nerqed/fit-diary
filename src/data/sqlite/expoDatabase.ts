@@ -23,9 +23,7 @@ function adapt(database: SQLiteDatabase): SqlDatabase {
 
 let opening: Promise<WorkoutRepository> | null = null;
 
-/** Lazy singleton: the designer's integration opts in; existing demo screens are unchanged.
- * Only the serialized repository receives this connection. Do not run queries outside it.
- */
+/** The serialized repository exclusively owns this shared device connection. */
 export function openWorkoutRepository(): Promise<WorkoutRepository> {
   if (!opening) {
     opening = (async () => {

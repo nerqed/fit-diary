@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import type { NutrientValue } from '../contracts/screens';
-import { Colors, Radii, Spacing, Typography, fmt, nutrientDisplay, sourceLabel } from './index';
+import { Colors, Radii, Spacing, Typography, fmt, nutrientDisplay, sourceLabel, unitLabel } from './index';
 
 // ---------------------------------------------------------------------------
 // RingChart — progress arc without react-native-svg (half-circle clip trick)
@@ -99,7 +99,7 @@ interface NutrientBarProps {
 
 export function NutrientBar({ nutrient, compact = false }: NutrientBarProps) {
   const { label, unit, amount, knownAmount, target, coverage, approximate } = nutrient;
-  const displayVal = nutrientDisplay(amount, knownAmount, approximate, coverage.state, unit);
+  const displayVal = nutrientDisplay(amount, knownAmount, approximate, coverage.state, unitLabel(unit));
   const filled = target !== null && target > 0
     ? Math.min(1, (amount ?? knownAmount ?? 0) / target)
     : 0;
@@ -200,7 +200,7 @@ export function NumericValue({ value, unit, approximate }: {
   if (value === null) return <NoData />;
   return (
     <Text>
-      {approximate === true ? '≈\u202F' : ''}{fmt(value)}{'\u202F'}{unit}
+      {approximate === true ? '≈\u202F' : ''}{fmt(value)}{'\u202F'}{unitLabel(unit)}
     </Text>
   );
 }
