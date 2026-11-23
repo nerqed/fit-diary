@@ -2,7 +2,7 @@
 
 Личное приложение на русском для iPhone. В **v0.3.0** вкладки «Тренировки» и «Прогресс» работают офлайн с локальной SQLite. Можно начать занятие без профиля, отметить предложенный подход одним тапом, вернуться к прошлому дню и сохранить резервную копию.
 
-Неподписанные IPA публикуются в [GitHub Releases](https://github.com/nerqed/fit-diary/releases). Сценарии приёмки каждой версии приведены в [CHANGELOG.md](CHANGELOG.md).
+Сборка 4 для iPhone доступна в GitHub Releases. [Скачать неподписанный IPA v0.3.0](https://github.com/nerqed/fit-diary/releases/download/v0.3.0/Forma-v0.3.0-f3f4f7f97662-unsigned.ipa) · [Чек-лист на iPhone](CHANGELOG.md#проверка-на-iphone)
 
 ## Скачать и установить — только с iPhone
 
