@@ -84,9 +84,11 @@ export function ProgressCalendar({ selectedDay, today, markedDays, markLabel, op
             return (
               <Pressable key={weekday} style={styles.cell} accessibilityRole="button"
                 accessibilityState={{ selected, disabled }} disabled={disabled} onPress={() => onSelect(day)}
-                accessibilityLabel={`${formatDay(day)} ${month.slice(0, 4)}${marked ? ', ' + markLabel : ''}`}>
-                <View style={[styles.tile, marked && styles.marked, selected && styles.selected]}>
-                  <Text style={[styles.day, marked && styles.markedText, disabled && styles.disabled]}>{number}</Text>
+                accessibilityLabel={`${formatDay(day)} ${month.slice(0, 4)}${day === today ? ', сегодня' : ''}${marked ? ', ' + markLabel : ''}`}>
+                <View style={[styles.tile, (selected || day === today) && styles.selected]}>
+                  <View style={[styles.tileFill, marked && styles.marked]}>
+                    <Text style={[styles.day, day === today && styles.todayText, marked && styles.markedText, disabled && styles.disabled]}>{number}</Text>
+                  </View>
                 </View>
               </Pressable>
             );
@@ -105,14 +107,16 @@ const styles = StyleSheet.create({
   title: { ...Typography.bodySemibold, color: Colors.ink },
   week: { flexDirection: 'row', gap: Spacing.xs },
   weekday: { flex: 1, ...Typography.micro, color: Colors.muted, textAlign: 'center' },
-  cell: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 44 },
+  cell: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 36 },
   tile: {
-    width: '100%', maxWidth: 44, aspectRatio: 1, alignItems: 'center', justifyContent: 'center',
-    borderRadius: Radii.s, backgroundColor: Colors.bg,
+    width: '100%', maxWidth: 36, height: 32, alignItems: 'center', justifyContent: 'center',
+    borderRadius: Radii.s, padding: 2, borderWidth: 2, borderColor: 'transparent',
   },
+  tileFill: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
   marked: { backgroundColor: Colors.accent },
   selected: { borderWidth: 2, borderColor: Colors.ink },
   day: { ...Typography.captionSemibold, color: Colors.ink },
+  todayText: { fontWeight: '700' },
   markedText: { color: Colors.white },
   disabled: { color: Colors.muted, opacity: 0.6 },
   jump: { flexDirection: 'row', alignItems: 'center', gap: Spacing.s },

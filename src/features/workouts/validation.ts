@@ -7,6 +7,7 @@ import { validateDay } from './workoutDates';
 
 const weekdays: readonly WorkoutWeekday[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const MAX_TOTAL_SETS = 200_000;
+type WorkoutFormat = 1 | 2 | 3;
 
 export class WorkoutValidationError extends Error {
   constructor(message: string) { super(message); this.name = 'WorkoutValidationError'; }
@@ -79,15 +80,20 @@ export function validateWorkoutSettings(input: unknown): WorkoutSettings {
 }
 
 export function validateSetResult(input: unknown): SetResult {
-  const data = object(input, ['actualReps', 'actualWeightKg', 'completed'], 'setResult', ['rir']);
+  const data = object(input, ['actualReps', 'actualWeightKg', 'completed'], 'setResult', ['rir', 'editedFields']);
   const actualReps = data.actualReps === null ? null : number(data.actualReps, 'setResult.actualReps', true, 0, 10_000);
   const completed = boolean(data.completed, 'setResult.completed');
   if (completed && (actualReps === null || actualReps === 0)) fail('setResult.actualReps', 'выполненный подход требует положительного факта повторений');
-  return { actualReps, actualWeightKg: weight(data.actualWeightKg, 'setResult.actualWeightKg'), completed, ...optionalRir(data) };
+  const fields = Object.hasOwn(data, 'editedFields') ? object(data.editedFields, [], 'setResult.editedFields', ['reps', 'weight']) : {};
+  const editedFields = {
+    ...(Object.hasOwn(fields, 'reps') ? { reps: boolean(fields.reps, 'setResult.editedFields.reps') } : {}),
+    ...(Object.hasOwn(fields, 'weight') ? { weight: boolean(fields.weight, 'setResult.editedFields.weight') } : {}),
+  };
+  return { editedFields, actualReps, actualWeightKg: weight(data.actualWeightKg, 'setResult.actualWeightKg'), completed, ...optionalRir(data) };
 }
 
-export function validateExercise(input: unknown, version: 1 | 2 = 2): Exercise {
-  const data = object(input, ['id', 'name', 'aliases', 'origin', 'archived', 'createdAt', 'updatedAt'], 'exercise', version === 2 ? ['note'] : []);
+export function validateExercise(input: unknown, version: WorkoutFormat = 3): Exercise {
+  const data = object(input, ['id', 'name', 'aliases', 'origin', 'archived', 'createdAt', 'updatedAt'], 'exercise', version >= 2 ? ['note'] : []);
   const origin = data.origin;
   if (origin !== 'builtin' && origin !== 'custom') fail('exercise.origin', 'неизвестный тип');
   const createdAt = validateWorkoutTimestamp(data.createdAt, 'exercise.createdAt');
@@ -101,8 +107,8 @@ export function validateExercise(input: unknown, version: 1 | 2 = 2): Exercise {
   };
 }
 
-export function validateTemplate(input: unknown): WorkoutTemplate {
-  const data = object(input, ['id', 'name', 'weekday', 'exercises', 'createdAt', 'updatedAt'], 'template');
+export function validateTemplate(input: unknown, version: WorkoutFormat = 3): WorkoutTemplate {
+  const data = object(input, ['id', 'name', 'weekday', 'exercises', 'createdAt', 'updatedAt'], 'template', version === 3 ? ['archived'] : []);
   if (data.weekday !== null && !weekdays.includes(data.weekday as WorkoutWeekday)) fail('template.weekday', 'неизвестный день недели');
   const createdAt = validateWorkoutTimestamp(data.createdAt, 'template.createdAt');
   const updatedAt = validateWorkoutTimestamp(data.updatedAt, 'template.updatedAt');
@@ -120,11 +126,15 @@ export function validateTemplate(input: unknown): WorkoutTemplate {
     return { id, exerciseId: validateWorkoutId(item.exerciseId), sets };
   });
   if (exercises.length === 0) fail('template.exercises', 'тренировке нужно хотя бы одно упражнение');
-  return { id: validateWorkoutId(data.id), name: text(data.name, 'template.name'), weekday: data.weekday as WorkoutWeekday | null, exercises, createdAt, updatedAt };
+  const archived = Object.hasOwn(data, 'archived') && boolean(data.archived, 'template.archived');
+  return {
+    id: validateWorkoutId(data.id), name: text(data.name, 'template.name'), weekday: data.weekday as WorkoutWeekday | null,
+    ...(archived ? { archived } : {}), exercises, createdAt, updatedAt,
+  };
 }
 
-export function validateSession(input: unknown, version: 1 | 2 = 2): WorkoutSession {
-  const data = object(input, ['id', 'templateId', 'name', 'startedAt', 'finishedAt', 'timeZone', 'status', 'restEndsAt', 'exercises'], 'session', version === 2 ? ['backdated', 'repeatedFromId'] : []);
+export function validateSession(input: unknown, version: WorkoutFormat = 3): WorkoutSession {
+  const data = object(input, ['id', 'templateId', 'name', 'startedAt', 'finishedAt', 'timeZone', 'status', 'restEndsAt', 'exercises'], 'session', version >= 2 ? ['backdated', 'repeatedFromId'] : []);
   const status = data.status;
   if (status !== 'active' && status !== 'completed' && status !== 'abandoned') fail('session.status', 'неизвестное состояние');
   const startedAt = validateWorkoutTimestamp(data.startedAt, 'session.startedAt');
@@ -139,14 +149,24 @@ export function validateSession(input: unknown, version: 1 | 2 = 2): WorkoutSess
     const item = object(inputExercise, ['id', 'exerciseId', 'name', 'sets'], 'session.exercise');
     const id = validateWorkoutId(item.id); unique(id, ids, 'session.exercise.id');
     const sets = array(item.sets, 100, 'session.sets').map((inputSet): PerformedSet => {
-      const row = object(inputSet, ['id', 'plannedReps', 'plannedWeightKg', 'actualReps', 'actualWeightKg', 'completed', 'updatedAt'], 'session.set', version === 2 ? ['rir'] : []);
+      const row = object(inputSet, ['id', 'plannedReps', 'plannedWeightKg', 'actualReps', 'actualWeightKg', 'completed', 'updatedAt'], 'session.set', version === 3 ? ['rir', 'copiedReps', 'copiedWeight'] : version === 2 ? ['rir'] : []);
       const setId = validateWorkoutId(row.id); unique(setId, ids, 'session.set.id');
       const actualReps = row.actualReps === null ? null : number(row.actualReps, 'session.set.actualReps', true, 0, 10_000);
       const completed = boolean(row.completed, 'session.set.completed');
       if (completed && (actualReps === null || actualReps === 0)) fail('session.set.actualReps', 'выполненный подход требует положительного факта повторений');
       const updatedAt = validateWorkoutTimestamp(row.updatedAt, 'session.set.updatedAt');
       if (Date.parse(updatedAt) < Date.parse(startedAt) || (version === 1 && finishedAt !== null && Date.parse(updatedAt) > Date.parse(finishedAt))) fail('session.set.updatedAt', 'вне времени сессии');
-      return { id: setId, plannedReps: number(row.plannedReps, 'session.set.plannedReps', true, 1, 10_000), plannedWeightKg: weight(row.plannedWeightKg, 'session.set.plannedWeightKg'), actualReps, actualWeightKg: weight(row.actualWeightKg, 'session.set.actualWeightKg'), completed, updatedAt, rir: optionalRir(row).rir ?? null };
+      const copiedReps = Object.hasOwn(row, 'copiedReps') && boolean(row.copiedReps, 'session.set.copiedReps');
+      const copiedWeight = Object.hasOwn(row, 'copiedWeight') && boolean(row.copiedWeight, 'session.set.copiedWeight');
+      if ((copiedReps || copiedWeight) && completed) fail('session.set', 'отмеченный подход не может содержать автоподстановку');
+      if ((copiedReps && actualReps === null) || (copiedWeight && row.actualWeightKg === null)) fail('session.set', 'отсутствует значение автоподстановки');
+      return {
+        id: setId, plannedReps: number(row.plannedReps, 'session.set.plannedReps', true, 1, 10_000),
+        plannedWeightKg: weight(row.plannedWeightKg, 'session.set.plannedWeightKg'),
+        actualReps, actualWeightKg: weight(row.actualWeightKg, 'session.set.actualWeightKg'),
+        completed, updatedAt, rir: optionalRir(row).rir ?? null,
+        ...(copiedReps ? { copiedReps } : {}), ...(copiedWeight ? { copiedWeight } : {}),
+      };
     });
     if (sets.length === 0) fail('session.sets', 'упражнению нужен хотя бы один подход');
     return { id, exerciseId: validateWorkoutId(item.exerciseId), name: text(item.name, 'session.exercise.name'), sets };
@@ -161,13 +181,13 @@ export function validateSession(input: unknown, version: 1 | 2 = 2): WorkoutSess
 }
 
 /** Strict, bounded, deep-copying validation before any import touches the database. */
-export function validateWorkoutData(input: unknown, version?: 1 | 2): WorkoutData {
+export function validateWorkoutData(input: unknown, version?: WorkoutFormat): WorkoutData {
   const keys = ['exercises', 'templates', 'sessions'];
   const progress = ['bodyWeights', 'settings'];
-  if (version === 2) keys.push(...progress);
+  if (version === 2 || version === 3) keys.push(...progress);
   const data = object(input, keys, 'data', version === undefined ? progress : []);
   const exercises = array(data.exercises, 10_000, 'data.exercises').map((exercise) => validateExercise(exercise, version));
-  const templates = array(data.templates, 1_000, 'data.templates').map(validateTemplate);
+  const templates = array(data.templates, 1_000, 'data.templates').map((item) => validateTemplate(item, version));
   const sessions = array(data.sessions, 10_000, 'data.sessions').map((session) => validateSession(session, version));
   const allIds = new Set<string>();
   const exerciseIds = new Set(exercises.map((item) => item.id));

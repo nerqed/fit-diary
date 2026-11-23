@@ -97,7 +97,7 @@ test('unsupported versions, foreign formats and unknown fields are rejected rath
   assert.throws(() => parseWorkoutBackup('{broken-json'), /JSON/);
 });
 
-test('restore a v1 workout file after saving a complete v2 recovery snapshot', async (t) => {
+test('restore a v1 workout file after saving a complete recovery snapshot', async (t) => {
   const database = createSqliteTestDatabase();
   t.after(() => database.close());
   const repository = createWorkoutRepository(database);
@@ -127,7 +127,7 @@ test('restore a v1 workout file after saving a complete v2 recovery snapshot', a
   assert.throws(() => parseWorkoutBackup(JSON.stringify({ ...envelope, data: { ...envelope.data, bodyWeights: [] } })));
 });
 
-test('incomplete v2 copies and invalid progress data are rejected before automatic backup or mutation', async (t) => {
+test('incomplete copies and invalid progress data are rejected before automatic backup or mutation', async (t) => {
   const database = createSqliteTestDatabase();
   t.after(() => database.close());
   const repository = createWorkoutRepository(database);
@@ -162,7 +162,11 @@ test('invalid references, duplicated identifiers and invalid numeric values cann
   badWeight.data.sessions[0].exercises[0].sets[0].actualWeightKg = -1;
   const badCompleted = structuredClone(valid);
   badCompleted.data.sessions[0].exercises[0].sets[0].actualReps = null;
-  for (const value of [badReference, duplicatedExercise, duplicatedSet, badWeight, badCompleted]) {
+  const copiedFact = structuredClone(valid);
+  copiedFact.data.sessions[0].exercises[0].sets[0].copiedWeight = true;
+  const missingCopy = structuredClone(valid);
+  missingCopy.data.sessions[0].exercises[0].sets[1].copiedReps = true;
+  for (const value of [badReference, duplicatedExercise, duplicatedSet, badWeight, badCompleted, copiedFact, missingCopy]) {
     assert.throws(() => parseWorkoutBackup(JSON.stringify(value)));
   }
 });
@@ -252,4 +256,42 @@ test('automatic recovery copy contains latest current data; repeated imports pre
   assert.equal(writes.length, 2);
   assert.deepEqual(parseWorkoutBackup(writes[1]!.text).data, restored);
   assert.deepEqual(await repository.exportData(), restored);
+});
+
+test('import v2 merges an empty legacy repeat chain immediately and v3 round-trips archives and copied field provenance', async (t) => {
+  const db = createSqliteTestDatabase();
+  t.after(() => db.close());
+  const repo = createWorkoutRepository(db);
+  const original = fixture();
+  const base = original.sessions[0]!;
+  function legacy(id: string, start: string, parent?: string, fact = false) {
+    return { ...base, id, templateId: null, status: 'completed', finishedAt: start, startedAt: start,
+      restEndsAt: null, ...(parent ? { repeatedFromId: parent } : {}),
+      exercises: [{ ...base.exercises[0]!, id: id + '-e', sets: [
+        { ...base.exercises[0]!.sets[0]!, id: id + '-s', actualReps: fact ? 8 : null, actualWeightKg: null,
+          completed: fact, updatedAt: start, rir: null },
+      ] }],
+    };
+  }
+  const data = { ...original, sessions: [
+    legacy('source', created), legacy('a', started, 'source'), legacy('b', started, 'a'),
+    legacy('done', started, 'b', true), legacy('unrelated', started),
+  ] };
+  const { writer } = recordingWriter();
+  await importWorkoutBackup(repo, writer, JSON.stringify({ kind: 'forma-workouts', formatVersion: 2, schemaVersion: 2, exportedAt: now, data }), 'replace-all', now);
+  assert.deepEqual((await repo.listSessions()).map((s) => s.id).sort(), ['done', 'source', 'unrelated']);
+  assert.equal((await repo.getSession('done'))?.repeatedFromId, 'source');
+  assert.equal((await repo.repeatSession('source', 'new-id', started, base.timeZone, true)).id, 'done');
+  const next = await repo.startSession('template', 'new-session', now, 'UTC');
+  await repo.updateSet(next.id, next.exercises[0]!.sets[0]!.id, { actualReps: 12, actualWeightKg: 0, completed: true }, now);
+  await repo.deleteTemplate('template');
+  const before = await repo.exportData();
+  const backup = serializeWorkoutBackup(before, now);
+  const set = parseWorkoutBackup(backup).data.sessions.find((s) => s.id === next.id)?.exercises[0]?.sets[1];
+  assert.equal(set?.copiedReps, true);
+  assert.equal(set?.copiedWeight, true);
+  await importWorkoutBackup(repo, writer, backup, 'replace-all', now);
+  assert.deepEqual(await repo.exportData(), before);
+  assert.deepEqual(await repo.listTemplates(), []);
+  assert.throws(() => parseWorkoutBackup(JSON.stringify({ ...JSON.parse(backup), schemaVersion: 2, formatVersion: 2 })));
 });

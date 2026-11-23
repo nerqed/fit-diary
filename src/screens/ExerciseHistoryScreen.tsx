@@ -12,13 +12,15 @@ import { formatDay, sessionDay } from '../features/workouts/workoutDates';
 import type { RootStackParamList } from '../navigation/types';
 import { Colors, Spacing, Typography } from '../theme';
 import { Card, SectionHeader } from '../theme/components';
+import { confirmDeleteSession } from './deleteWorkoutSession';
+import { SwipeDeleteRow } from './SwipeDeleteRow';
 import { formatProgressValue, ProgressChart } from './ProgressChart';
 import { EmptyState, ScreenShell } from './ScreenShell';
 import { Chip, Row } from './ui';
 
 function describeSet(set: PerformedSet, bodyweight: boolean) {
   const reps = set.actualReps ?? '—';
-  if (bodyweight && !set.actualWeightKg) return `свой вес × ${reps}`;
+  if (bodyweight && set.actualWeightKg === 0) return `свой вес × ${reps}`;
   if (set.actualWeightKg === null) return `${reps} повт.`;
   return `${formatProgressValue(set.actualWeightKg)} кг × ${reps}`;
 }
@@ -29,6 +31,7 @@ export function ExerciseHistoryScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const exercise = data.exercises.find((item) => item.id === exerciseId);
   const history = useMemo(() => getExerciseHistory(data.sessions, exerciseId), [data.sessions, exerciseId]);
+  const sessions = useMemo(() => new Map(data.sessions.map((session) => [session.id, session])), [data.sessions]);
   const name = exercise?.name ?? history.at(-1)?.exerciseNames[0] ?? 'Упражнение';
   const bodyweight = isBodyweightExercise(exerciseId, name);
   const recordedReps = new Set<number>();
@@ -52,7 +55,7 @@ export function ExerciseHistoryScreen() {
     ? history.map((row) => {
       let value: number | null = null;
       for (const set of row.sets) {
-        if (set.completed && set.actualReps !== null) value = Math.max(value ?? 0, set.actualReps);
+        if (set.completed && set.actualReps !== null && set.actualWeightKg === 0) value = Math.max(value ?? 0, set.actualReps);
       }
       return { date: sessionDay(row), time: Date.parse(row.startedAt), value };
     })
@@ -80,7 +83,7 @@ export function ExerciseHistoryScreen() {
           {points.some((point) => point.value !== null)
             ? <ProgressChart points={points} unit={ownWeightOnly ? 'повт.' : 'кг'}
               label={ownWeightOnly ? 'Повторения со своим весом' : `Вес на ${reps} повт.`} />
-            : <EmptyState text={ownWeightOnly ? 'Пока нет отмеченных подходов.' : 'Пока нет подходов с записанным весом.'} />}
+            : <EmptyState text={ownWeightOnly ? 'Пока нет отмеченных подходов со своим весом.' : 'Пока нет подходов с записанным весом.'} />}
         </Card>
         {!ownWeightOnly && <Card style={styles.card}>
           <Text style={styles.heading}>Лучший объём за тренировку</Text>
@@ -93,15 +96,19 @@ export function ExerciseHistoryScreen() {
         <Card>
           {history.slice().reverse().map((row) => {
             const completed = row.sets.filter((set) => set.completed);
-            return <Pressable key={row.sessionId} accessibilityRole="button" style={styles.item}
-              onPress={() => navigation.navigate('WorkoutSession', { sessionId: row.sessionId })}>
-              <View style={styles.details}>
-                <Text style={styles.heading}>{row.sessionName}</Text>
-                <Text style={styles.label}>{formatDay(sessionDay(row))} · Подходы {completed.length}/{row.sets.length}</Text>
-                {completed.length > 0 && <Text style={styles.label}>{completed.map((set) => describeSet(set, bodyweight)).join(' · ')}</Text>}
-              </View>
-              <SymbolView name="chevron.right" size={16} tintColor={Colors.muted} />
-            </Pressable>;
+            const session = sessions.get(row.sessionId);
+            if (!session) return null;
+            return <SwipeDeleteRow key={row.sessionId} label={`Удалить тренировку «${row.sessionName}»`} onDelete={() => confirmDeleteSession(controller, session)}>
+              <Pressable accessibilityRole="button" style={styles.item}
+                onPress={() => navigation.navigate('WorkoutSession', { sessionId: row.sessionId })}>
+                <View style={styles.details}>
+                  <Text style={styles.heading}>{row.sessionName}</Text>
+                  <Text style={styles.label}>{formatDay(sessionDay(row))} · Подходы {completed.length}/{row.sets.length}</Text>
+                  {completed.length > 0 && <Text style={styles.label}>{completed.map((set) => describeSet(set, bodyweight)).join(' · ')}</Text>}
+                </View>
+                <SymbolView name="chevron.right" size={16} tintColor={Colors.muted} />
+              </Pressable>
+            </SwipeDeleteRow>;
           })}
         </Card>
       </>}

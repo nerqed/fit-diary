@@ -5,7 +5,7 @@ import { SymbolView } from 'expo-symbols';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, AppState, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { getWeightTrend } from '../features/workouts/analytics';
+import { getExerciseListProgress, getWeightTrend } from '../features/workouts/analytics';
 import type { WorkoutSession } from '../features/workouts/model';
 import { useWorkout } from '../features/workouts/WorkoutContext';
 import { formatDay, localDay, sessionDay } from '../features/workouts/workoutDates';
@@ -13,8 +13,9 @@ import type { MainTabParamList, RootStackParamList } from '../navigation/types';
 import { Colors, Radii, Spacing, Typography } from '../theme';
 import { Card, SectionHeader } from '../theme/components';
 import { ProgressCalendar } from './ProgressCalendar';
-import { formatProgressValue, ProgressChart } from './ProgressChart';
-import { EmptyState, ScreenShell } from './ScreenShell';
+import { ExerciseTrend, formatProgressValue, ProgressChart } from './ProgressChart';
+import { ScreenShell } from './ScreenShell';
+import { WorkoutDaySheet } from './WorkoutDaySheet';
 import { PrimaryButton } from './ui';
 
 type ProgressNavigation = CompositeNavigationProp<
@@ -102,8 +103,7 @@ export function ProgressScreen() {
   const { data } = useWorkout();
   const navigation = useNavigation<ProgressNavigation>();
   const [today, setToday] = useState(() => localDay());
-  const [chosen, setChosen] = useState<string | null>(null);
-  const day = chosen ?? today;
+  const [sheetDay, setSheetDay] = useState<string | null>(null);
 
   useFocusEffect(useCallback(() => {
     setToday(localDay());
@@ -136,69 +136,53 @@ export function ProgressScreen() {
       const session = latest.get(exercise.id);
       return session ? [{ exercise, session }] : [];
     }).sort((a, b) => Date.parse(b.session.startedAt) - Date.parse(a.session.startedAt)
-      || a.exercise.name.localeCompare(b.exercise.name, 'ru'));
+      || a.exercise.name.localeCompare(b.exercise.name, 'ru'))
+      .map(({ exercise }) => ({ exercise, progress: getExerciseListProgress(data.sessions, exercise.id) }));
   }, [data.exercises, data.sessions]);
-
-  const firstWorkout = data.templates.length === 0 && sessionsByDay.size === 0;
-  const selectedSessions = sessionsByDay.get(day) ?? [];
-  function addWorkout(date: string) {
-    if (firstWorkout) navigation.navigate('WorkoutEditor', { day: date });
-    else navigation.navigate('Workouts', { day: date });
-  }
-  function openDay(date: string) {
-    setChosen(date === today ? null : date);
-    const sessions = sessionsByDay.get(date) ?? [];
-    if (sessions.length === 0) return addWorkout(date);
-    if (sessions.length === 1 && sessions[0]) return navigation.navigate('WorkoutSession', { sessionId: sessions[0].id });
-    const sorted = [...sessions].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
-    Alert.alert(`Тренировки за ${formatDay(date)}`, undefined, [
-      ...sorted.map((session, index) => {
-        const sameName = sorted.filter((item) => item.name === session.name).length > 1;
-        const text = sameName ? `${index + 1}. ${session.name}` : session.name;
-        return { text, onPress: () => navigation.navigate('WorkoutSession', { sessionId: session.id }) };
-      }),
-      { text: 'Отмена', style: 'cancel' },
-    ]);
-  }
 
   return (
     <ScreenShell title="Прогресс">
-      {firstWorkout && <Card>
-        <EmptyState text="Создай первую тренировку" />
-        <PrimaryButton title="Создать тренировку" onPress={() => addWorkout(today)} />
-      </Card>}
       <BodyWeightCard today={today} />
-      <SectionHeader title="Календарь тренировок" />
-      <Card style={styles.contents}>
-        <ProgressCalendar today={today} selectedDay={day} markedDays={markedDays} openFutureMarks markLabel="есть тренировка" onSelect={openDay} />
-        {selectedSessions.map((session) => (
-          <Pressable key={session.id} accessibilityRole="button" style={styles.item}
-            onPress={() => navigation.navigate('WorkoutSession', { sessionId: session.id })}>
-            <View style={styles.itemBody}>
-              <Text style={styles.stat}>{session.name}</Text>
-              <Text style={styles.label}>{formatDay(day)}{session.status === 'active' ? ' · продолжается' : ''}</Text>
-            </View>
-            <SymbolView name="chevron.right" size={16} tintColor={Colors.muted} />
-          </Pressable>
-        ))}
-        {selectedSessions.length > 0 && day <= today && <PrimaryButton title={`Добавить тренировку за ${formatDay(day)}`}
-          secondary onPress={() => addWorkout(day)} />}
-      </Card>
       {exercises.length > 0 && <>
-        <SectionHeader title="История упражнений" />
+        <SectionHeader title="Упражнения" />
         <Card>
-          {exercises.map(({ exercise, session }) => (
-            <Pressable key={exercise.id} accessibilityRole="button" onPress={() => navigation.navigate('ExerciseHistory', { exerciseId: exercise.id })}
-              style={styles.item}>
+          {exercises.map(({ exercise, progress }) => {
+            const { latest, best, bodyweight, direction, trend } = progress;
+            const fact = (set: typeof latest) => {
+              if (!set) return '—';
+              const weight = bodyweight && set.weightKg === 0 ? 'свой вес' : formatProgressValue(set.weightKg);
+              return `${weight} × ${set.reps}`;
+            };
+            const change = direction === 'up' ? 'выше' : direction === 'down' ? 'ниже' : 'без изменений';
+            return <Pressable key={exercise.id} accessibilityRole="button"
+              accessibilityLabel={`${exercise.name}. Последний подход: ${fact(latest)}. Лучший: ${fact(best)}.${direction ? ' По сравнению с прошлой тренировкой: ' + change : ''}`}
+              onPress={() => navigation.navigate('ExerciseHistory', { exerciseId: exercise.id })} style={styles.item}>
               <View style={styles.itemBody}>
                 <Text style={styles.stat}>{exercise.name}</Text>
-                <Text style={styles.label}>{formatDay(sessionDay(session))}</Text>
+                <Text style={styles.label}>Последний: {fact(latest)} {direction === 'up' ? '↑' : direction === 'down' ? '↓' : direction === 'same' ? '→' : ''}</Text>
+                <Text style={styles.label}>Лучший: {fact(best)}</Text>
               </View>
+              <ExerciseTrend values={trend} />
               <SymbolView name="chevron.right" size={16} tintColor={Colors.muted} />
-            </Pressable>
-          ))}
+            </Pressable>;
+          })}
         </Card>
       </>}
+      <SectionHeader title="Календарь тренировок" />
+      <Card style={styles.contents}>
+        <ProgressCalendar today={today} selectedDay={sheetDay ?? today} markedDays={markedDays} openFutureMarks
+          markLabel="есть тренировка" onSelect={setSheetDay} />
+      </Card>
+      {sheetDay !== null && <WorkoutDaySheet key={sheetDay} day={sheetDay} today={today}
+        sessions={sessionsByDay.get(sheetDay) ?? []} onClose={() => setSheetDay(null)}
+        onOpen={(session, edit) => {
+          setSheetDay(null);
+          navigation.navigate('WorkoutSession', { sessionId: session.id, edit });
+        }}
+        onCreate={() => {
+          setSheetDay(null);
+          navigation.navigate('WorkoutEditor', { day: sheetDay });
+        }} />}
     </ScreenShell>
   );
 }

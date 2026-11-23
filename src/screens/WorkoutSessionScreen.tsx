@@ -7,10 +7,11 @@ import { Alert, AppState, Keyboard, Pressable, StyleSheet, Text, TextInput, View
 import { getSessionSummary } from '../features/workouts/analytics';
 import { useWorkout } from '../features/workouts/WorkoutContext';
 import { formatDay, sessionDay } from '../features/workouts/workoutDates';
-import type { SessionView } from '../features/workouts/controller';
+import type { ComparedSet, SessionView } from '../features/workouts/controller';
 import type { RootStackParamList } from '../navigation/types';
 import { Colors, Radii, Spacing, Typography } from '../theme';
 import { Card } from '../theme/components';
+import { confirmDeleteSession } from './deleteWorkoutSession';
 import { ExercisePicker } from './ExercisePicker';
 import { EmptyState, ScreenShell } from './ScreenShell';
 import { PrimaryButton } from './ui';
@@ -20,7 +21,14 @@ import { displayedWeight, setLabel, showNumber, WorkoutSetRow, type SetInputs } 
 const restSeconds = 90;
 const formatVolume = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
 type SessionEntry = SessionView['exercises'][number];
-type InputDraft = SetInputs & { exerciseId: string };
+type InputDraft = SetInputs & { exerciseId: string; hideWeightHint?: boolean; hideRepsHint?: boolean };
+function rowInputs(draft: InputDraft | undefined, exerciseId: string, set: ComparedSet): SetInputs {
+  if (draft?.exerciseId !== exerciseId) return {};
+  return {
+    weight: draft.weight ?? (draft.hideWeightHint && set.actualWeightKg === null ? '' : undefined),
+    reps: draft.reps ?? (draft.hideRepsHint && set.actualReps === null ? '' : undefined),
+  };
+}
 type SetAction = { completed?: boolean; rir?: number | null };
 
 function readNumber(text: string, field: keyof SetInputs) {
@@ -78,20 +86,34 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
     if (!current || !entry || !set) return;
     const draft = inputRef.current[setId];
     const matching = draft?.exerciseId === exerciseId ? draft : undefined;
+    const values = rowInputs(matching, exerciseId, set);
     const confirming = action.completed === true && !set.completed;
     let actualReps = confirming ? set.actualReps ?? set.plannedReps : set.actualReps;
     let actualWeightKg = confirming ? displayedWeight(set) : set.actualWeightKg;
-    if (matching?.weight !== undefined) actualWeightKg = readNumber(matching.weight, 'weight');
-    if (matching?.reps !== undefined) actualReps = readNumber(matching.reps, 'reps');
+    if (values.weight !== undefined) actualWeightKg = readNumber(values.weight, 'weight');
+    if (values.reps !== undefined) actualReps = readNumber(values.reps, 'reps');
     if (confirming && entry.bodyweight && actualWeightKg === null) actualWeightKg = 0;
     if (confirming && !actualReps) throw new Error('Для отметки подхода укажите число выполненных повторений.');
     const completed = action.completed ?? (set.completed && actualReps !== null && actualReps > 0);
     const rir = action.rir === undefined ? set.rir ?? null : action.rir;
-    if (actualReps !== set.actualReps || actualWeightKg !== set.actualWeightKg || completed !== set.completed || rir !== (set.rir ?? null)) {
+    const editedFields = { weight: matching?.weight !== undefined, reps: matching?.reps !== undefined };
+    const editedSuggestion = (editedFields.weight && set.copiedWeight) || (editedFields.reps && set.copiedReps);
+    if (editedSuggestion || actualReps !== set.actualReps || actualWeightKg !== set.actualWeightKg || completed !== set.completed || rir !== (set.rir ?? null)) {
       const rest = confirming && current.session.status === 'active' && !current.session.backdated ? restSeconds : undefined;
-      await controller.updateSet(id, setId, { actualReps, actualWeightKg, completed, rir }, rest);
+      await controller.updateSet(id, setId, { actualReps, actualWeightKg, completed, rir, editedFields }, rest);
     }
-    if (inputRef.current[setId] === draft) dirtySets.current.delete(setId);
+    if (matching && inputRef.current[setId] === matching) {
+      dirtySets.current.delete(setId);
+      const next = { ...inputRef.current };
+      // Keep a deliberately cleared field blank while the database still has no value.
+      // A later set completion can supply a fresh value for that field.
+      const hideWeightHint = values.weight?.trim() === '' && actualWeightKg === null;
+      const hideRepsHint = values.reps?.trim() === '' && actualReps === null;
+      if (hideWeightHint || hideRepsHint) next[setId] = { exerciseId, hideWeightHint, hideRepsHint };
+      else delete next[setId];
+      inputRef.current = next;
+      setInputs(next);
+    }
   }, [controller, id]);
 
   const saveNote = useCallback(async (exerciseId: string) => {
@@ -163,19 +185,23 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
 
   return (
     <View style={styles.page}>
-      <ScreenShell title={session.name} subtitle={`${day}${session.status === 'completed' && !showEditor ? ' · Итог тренировки' : ''}`}>
+      <ScreenShell title={summary ? `Итог · ${day}` : session.name} subtitle={summary ? session.name : day}>
         <Card style={styles.gap}>
           <Text style={styles.metric}>{count} из {allSets.length} подходов</Text>
-          {!!summary && <Text style={styles.text}>Внешний объём · {load == null ? '—' :
-            `${volume?.state === 'partial' ? 'не менее ' : ''}${formatVolume.format(load)} кг × повт.`}</Text>}
+          {summary && <>
+            <Text style={styles.text}>Тоннаж {load == null ? '—' :
+              `${volume?.state === 'partial' ? 'не менее ' : ''}${formatVolume.format(load)} кг`}</Text>
+            {summary.bodyweightReps > 0 && <Text style={styles.text}>+ {summary.bodyweightReps} повт. со своим весом</Text>}
+            {summary.durationMinutes !== null && <Text style={styles.text}>Длительность {summary.durationMinutes} мин</Text>}
+          </>}
         </Card>
         {!!summary?.records.length && <Card style={styles.gap}>
-          <Text style={styles.metric}>Новый рекорд</Text>
+          <Text style={styles.metric}>{summary.records.length === 1 ? 'Новый рекорд' : 'Новые рекорды'}</Text>
           {summary.records.map((record) => (
             <Text key={`${record.exerciseId}-${record.kind}-${record.kind === 'weight' ? record.reps : ''}`} style={styles.text}>
-              {record.exerciseName} · {record.kind === 'weight'
-                ? `${showNumber(record.weightKg)} кг × ${record.reps}`
-                : `объём ${formatVolume.format(record.volumeKgReps)} кг × повт.`}
+              {record.exerciseName}: {record.kind === 'weight'
+                ? `${showNumber(record.weightKg)} × ${record.reps} (было ${showNumber(record.previousWeightKg)} × ${record.reps})`
+                : `тоннаж ${formatVolume.format(record.volumeKgReps)} кг (было ${formatVolume.format(record.previousVolumeKgReps)} кг)`}
             </Text>
           ))}
         </Card>}
@@ -203,14 +229,14 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
               {showEditor ? entry.sets.map((set, index) => (
                 <WorkoutSetRow key={`${entry.exerciseId}-${set.id}`} set={set} position={index + 1}
                   bodyweight={entry.bodyweight} showRir={!!data.settings?.showRir}
-                  inputs={inputs[set.id]?.exerciseId === entry.exerciseId ? inputs[set.id]! : {}}
+                  inputs={rowInputs(inputs[set.id], entry.exerciseId, set)}
                   onInput={(field, text) => editSet(set.id, entry.exerciseId, field, text)}
                   onBlur={() => { if (dirtySets.current.has(set.id)) void enqueue(() => saveSet(set.id, entry.exerciseId)).catch(reportError); }}
                   onCheck={() => check(set.id, entry.exerciseId, !set.completed)}
                   onRir={(rir) => { void enqueue(() => saveSet(set.id, entry.exerciseId, { rir })).catch(reportError); }} />
               )) : entry.sets.map((set, index) => (
                 <Text key={set.id} style={styles.text}>
-                  {index + 1}. {setLabel(set.actualWeightKg, set.actualReps, entry.bodyweight)}{!set.completed && ' · без отметки'}
+                  {index + 1}. {setLabel(set.copiedWeight ? null : set.actualWeightKg, set.copiedReps ? null : set.actualReps, entry.bodyweight)}{!set.completed && ' · без отметки'}
                   {data.settings?.showRir && set.completed && set.rir != null ? ` · RIR ${set.rir === 3 ? '3+' : set.rir}` : ''}
                 </Text>
               ))}
@@ -222,7 +248,13 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
           );
         })}
         {showEditor ? <PrimaryButton title={session.status === 'active' ? 'Завершить' : 'Готово'} disabled={finishing} onPress={finish} />
-          : session.status === 'completed' && <PrimaryButton title="Дополнить или изменить подходы" secondary onPress={() => setEditingHistory(true)} />}
+          : session.status === 'completed' && <PrimaryButton title="Изменить подходы" secondary onPress={() => setEditingHistory(true)} />}
+        <PrimaryButton title="Удалить тренировку" secondary disabled={finishing} onPress={() => {
+          confirmDeleteSession(controller, session, () => {
+            if (navigation.canGoBack()) navigation.goBack();
+            else navigation.replace('Main', { screen: 'Workouts' });
+          });
+        }} />
       </ScreenShell>
       {session.status === 'active' && !session.backdated && session.restEndsAt && <WorkoutRestBanner deadline={session.restEndsAt}
         onExtend={() => { void controller.extendRest(id, 15).catch(reportError); }}

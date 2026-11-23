@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   getBestWeightSeries,
   getExerciseHistory,
+  getExerciseListProgress,
   getExerciseRecords,
   getPreviousExerciseSession,
   getRestRemainingSeconds,
@@ -208,15 +209,65 @@ test('session summary compares the same rep counts, preserves partial volume and
   assert.equal(result.totalSets, 4);
   assert.deepEqual(result.volume, { amountKgReps: null, knownAmountKgReps: 1050, knownSets: 2, totalSets: 3, state: 'partial' });
   assert.deepEqual(result.records, [
-    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'weight', reps: 8, weightKg: 62.5 },
-    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'volume', volumeKgReps: 1050 },
+    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'weight', reps: 8, weightKg: 62.5, previousWeightKg: 60 },
+    { exerciseId: 'squat', exerciseName: 'Жим', kind: 'volume', volumeKgReps: 1050, previousVolumeKgReps: 1030 },
   ]);
-  assert.equal(getSessionSummary(older, [newer]).records.length, 3, 'first recorded loads and complete volume establish records');
+  assert.deepEqual(getSessionSummary(older, [newer]).records, []);
+  assert.equal(result.durationMinutes, 30);
   const tied = { ...newer, id: 'tied', startedAt: later.startedAt, finishedAt: later.finishedAt };
   assert.deepEqual(getSessionSummary(tied, [newer, tied]).records, []);
   assert.deepEqual(getSessionSummary({ ...newer, finishedAt: null, status: 'active' }, [older]).records, []);
   const noLoad = session('abs', [exercise('e', 'Скручивания', [set('s', 0, 15)], 'builtin:crunch')]);
   assert.deepEqual(getSessionSummary(noLoad, []).records, []);
+});
+
+test('a new rep count establishes a baseline and partial volumes cannot establish a volume record', () => {
+  const previous = session('prior', [exercise('e1', 'Жим', [set('s1', 60, 8), set('s2', null, 5)])]);
+  const next = session('next', [exercise('e2', 'Жим', [set('s3', 100, 3)])], {
+    startedAt: '2026-11-13T10:00:00Z', finishedAt: '2026-11-13T11:00:00Z',
+  });
+  assert.deepEqual(getSessionSummary(next, [previous, next]).records, []);
+});
+
+test('summary counts only completed unweighted bodyweight reps and omits retrospective or unknown duration', () => {
+  const workout = session('workout', [
+    exercise('a', 'Пресс', [set('a1', 0, 15), set('a2', null, 8), set('a3', 2, 6), set('a4', 0, 50, false)], 'builtin:crunch'),
+    exercise('b', 'Жим', [set('b1', 0, 20)]),
+  ]);
+  const summary = getSessionSummary(workout, []);
+  assert.equal(summary.bodyweightReps, 15);
+  assert.equal(summary.volume.knownAmountKgReps, 12);
+  assert.equal(summary.volume.state, 'partial');
+  assert.equal(summary.durationMinutes, 60);
+  assert.equal(getSessionSummary({ ...workout, backdated: true }, []).durationMinutes, null);
+  assert.equal(getSessionSummary({ ...workout, finishedAt: start }, []).durationMinutes, null);
+});
+
+test('exercise list compares matched reps, leaves gaps and uses completed actual sets only', () => {
+  // Equal instants are sorted by ID.
+  const rows = [
+    session('a', [exercise('1', 'Жим', [set('1a', 70, 8), set('1b', 100, 4)])]),
+    session('b', [exercise('2', 'Жим', [set('2a', 65, 6)])]),
+    session('c', [exercise('3', 'Жим', [set('3a', 60, 8), set('3b', 60, 3), set('3c', 80, 10, false)])]),
+    session('d', [exercise('4', 'Жим', [set('4a', null, 8)])]),
+  ];
+  assert.deepEqual(getExerciseListProgress(rows, 'squat'), {
+    latest: { weightKg: 60, reps: 8 }, best: { weightKg: 70, reps: 8 },
+    bodyweight: false, direction: null, trend: [70, null, 60],
+  });
+  assert.equal(getExerciseListProgress([rows[0]!, rows[2]!], 'squat').direction, 'down');
+  assert.equal(getExerciseListProgress(rows, 'unknown').latest, null);
+});
+
+test('unweighted exercises compare repetitions without mixing loaded and unloaded sets', () => {
+  const results = [[0, 8], [5, 8], [0, 12], [0, 10]] as const;
+  const rows = results.map(([weight, reps], i) =>
+    session(String(i), [exercise('e', 'Пресс', [set('s', weight, reps)], 'builtin:crunch')]));
+  assert.deepEqual(getExerciseListProgress(rows, 'builtin:crunch'), {
+    latest: { weightKg: 0, reps: 10 }, best: { weightKg: 0, reps: 12 },
+    bodyweight: true, direction: 'down', trend: [8, null, 12, 10],
+  });
+  assert.deepEqual(getExerciseListProgress(rows.slice(0, 2), 'builtin:crunch').trend, [null, 5]);
 });
 
 test('body weight trend uses calendar windows, ignores missing days and recalculates after retrospective entries', () => {

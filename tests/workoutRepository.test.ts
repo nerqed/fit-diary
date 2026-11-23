@@ -161,14 +161,14 @@ test('repeat uses the completed snapshot after deleting its template and exercis
   await repository.deleteTemplate(plan.id);
   const nextDay = '2026-11-18T11:00:00Z';
   const repeat = await repository.repeatSession('original', 'repeat', nextDay, 'UTC');
-  assert.equal(repeat.templateId, null);
+  assert.equal(repeat.templateId, plan.id);
   assert.equal(repeat.name, plan.name);
   assert.equal(repeat.status, 'active');
   assert.equal(repeat.exercises[0]?.sets[0]?.plannedReps, 8);
   assert.equal(repeat.exercises[0]?.sets[0]?.actualReps, null);
   assert.equal(repeat.exercises[0]?.sets[0]?.rir, null);
   assert.deepEqual(await repository.repeatSession('original', 'repeat', updatedAt, 'UTC'), repeat);
-  await assert.rejects(repository.repeatSession('original', 'second', nextDay, 'UTC'), /текущую/);
+  assert.deepEqual(await repository.repeatSession('original', 'second', nextDay, 'UTC'), repeat);
   await assert.rejects(repository.repeatSession('second', 'repeat', nextDay, 'UTC'), /другой/);
 
   await repository.updateSet('repeat', 'repeat:set:0:0', facts, nextDay);
@@ -262,7 +262,7 @@ test('backdated starts and repeats remain editable alongside a live workout and 
     assert.equal(edited?.exercises[0]?.sets[0]?.actualReps, 9);
   }
   assert.deepEqual((await repository.listSessions()).filter((session) => session.status === 'active'), [live]);
-  await assert.rejects(repository.startSession('template-a', 'another-live', startedAt, 'UTC'), /текущую/);
+  assert.deepEqual(await repository.startSession('template-a', 'another-live', startedAt, 'UTC'), live);
 });
 
 test('template CRUD/copy preserve order, unique IDs and historical snapshots', async () => {
@@ -278,8 +278,9 @@ test('template CRUD/copy preserve order, unique IDs and historical snapshots', a
     await repository.saveTemplate({ ...original, name: 'Переименовано', updatedAt, exercises: [...original.exercises].reverse() });
     assert.deepEqual(await repository.getSession(session.id), session, 'template update cannot rewrite session snapshot');
     await repository.deleteTemplate(original.id);
-    assert.deepEqual(await repository.getSession(session.id), { ...session, templateId: null });
-    assert.equal((await database.all<{ n: number }>('SELECT COUNT(*) AS n FROM template_exercises WHERE template_id=?', [original.id]))[0]?.n, 0);
+    assert.deepEqual(await repository.getSession(session.id), session);
+    assert.equal((await repository.getTemplate(original.id))?.archived, true);
+    assert.equal((await database.all<{ n: number }>('SELECT COUNT(*) AS n FROM template_exercises WHERE template_id=?', [original.id]))[0]?.n, original.exercises.length);
     assert.equal((await repository.listTemplates()).length, 1);
     await assert.rejects(repository.copyTemplate('missing', 'other-copy', createdAt), /не найден/);
     await assert.rejects(repository.saveTemplate({ ...copied, id: 'invalid-ref', exercises: [{ id: 'invalid-ref:e', exerciseId: 'missing', sets: [{ id: 'invalid-ref:s', reps: 10, weightKg: null }] }] }), /FOREIGN KEY/);
@@ -309,7 +310,7 @@ test('session/set retries are idempotent, partial facts survive, finish clears t
     await repository.saveTemplate(template());
     const first = await repository.startSession('template-a', 'session-a', startedAt, 'UTC');
     assert.deepEqual(await repository.startSession('template-a', 'session-a', updatedAt, 'UTC'), first);
-    await assert.rejects(repository.startSession('template-a', 'session-b', updatedAt, 'UTC'), /текущую/);
+    assert.deepEqual(await repository.startSession('template-a', 'session-b', updatedAt, 'UTC'), first);
     const result = { actualReps: 8, actualWeightKg: null, completed: true } as const;
     await repository.updateSet('session-a', 'session-a:set:0:0', result, updatedAt);
     await repository.updateSet('session-a', 'session-a:set:0:0', result, updatedAt);
@@ -402,11 +403,12 @@ test('queued operations cannot enter backup/import transaction; simultaneous sta
   const database = createSqliteTestDatabase(); const repository = createWorkoutRepository(database);
   try {
     await repository.saveTemplate(template());
-    const results = await Promise.allSettled([
+    const results = await Promise.all([
       repository.startSession('template-a', 'session-a', startedAt, 'UTC'),
       repository.startSession('template-a', 'session-b', startedAt, 'UTC'),
     ]);
-    assert.equal(results.filter((item) => item.status === 'fulfilled').length, 1);
+    assert.deepEqual(results[0], results[1]);
+    assert.equal((await repository.listSessions()).length, 1);
     const current = await repository.exportData();
     let releaseBackup!: () => void; let backupStarted!: () => void;
     const gate = new Promise<void>((resolve) => { releaseBackup = resolve; });
@@ -420,4 +422,133 @@ test('queued operations cannot enter backup/import transaction; simultaneous sta
     assert.equal((await repository.listExercises()).some((item) => item.id === 'custom-a'), true);
     assert.equal((await database.all('PRAGMA foreign_key_check')).length, 0);
   } finally { database.close(); }
+});
+
+test('same local template day coalesces template and repeat starts with new IDs during a live workout', async (t) => {
+  const db = createSqliteTestDatabase();
+  t.after(() => db.close());
+  const repository = createWorkoutRepository(db);
+  await repository.saveTemplate(template());
+  await repository.saveTemplate(template('other'));
+  const source = await repository.startSession('template-a', 'source', '2026-11-01T12:00:00Z', 'UTC', true);
+  const live = await repository.startSession('other', 'live', startedAt, 'UTC');
+  assert.equal((await repository.repeatSession(source.id, 'next-live', startedAt, 'UTC')).id, live.id);
+  const [first, second] = await Promise.all([
+    repository.startSession('template-a', 'retro', '2026-11-04T23:30:00Z', 'Europe/Paris', true),
+    repository.repeatSession(source.id, 'other-uuid', '2026-11-05T21:30:00Z', 'Europe/Paris', true),
+  ]);
+  assert.deepEqual(first, second);
+  const other = await repository.startSession('template-a', 'different-day', '2026-11-05T23:30:00Z', 'Europe/Paris', true);
+  assert.notEqual(other.id, first.id);
+  assert.equal((await repository.listSessions()).length, 4);
+});
+
+test('deleting sessions cascades sets and repeat origin while template history stays archived', async (t) => {
+  const db = createSqliteTestDatabase();
+  t.after(() => db.close());
+  const repo = createWorkoutRepository(db);
+  await repo.saveTemplate(template());
+  await repo.saveTemplate(template('unused'));
+  await repo.deleteTemplate('unused');
+  assert.equal(await repo.getTemplate('unused'), null);
+  const source = await repo.startSession('template-a', 'source', createdAt, 'UTC', true);
+  await repo.repeatSession(source.id, 'live', '2026-11-19T12:00:00Z', 'UTC');
+  await repo.deleteTemplate('template-a');
+  assert.deepEqual(await repo.listTemplates(), []);
+  assert.equal((await repo.exportData()).templates[0]?.archived, true);
+  await assert.rejects(repo.saveTemplate(template()), /архив/);
+  await repo.deleteSession(source.id);
+  await repo.deleteSession(source.id);
+  assert.equal((await repo.getSession('live'))?.repeatedFromId, undefined);
+  for (const table of ['session_exercises', 'session_sets']) {
+    assert.deepEqual(await db.all(`SELECT id FROM ${table} WHERE id LIKE 'source:%'`), []);
+  }
+  assert.deepEqual(await db.all('PRAGMA foreign_key_check'), []);
+  await repo.deleteSession('live');
+  assert.deepEqual(await repo.listSessions(), []);
+});
+
+test('completion copies editable values forward per field and occurrence, preserving explicit zero and retry semantics', async (t) => {
+  const db = createSqliteTestDatabase();
+  t.after(() => db.close());
+  const repo = createWorkoutRepository(db);
+  const plan = template();
+  const entry = plan.exercises[0]!;
+  await repo.saveTemplate({ ...plan, exercises: [
+    { ...entry, sets: Array.from({ length: 5 }, (_, i) => ({ id: 'planned-' + i, reps: 8, weightKg: 30 })) },
+    { ...plan.exercises[1]!, exerciseId: entry.exerciseId },
+  ] });
+  const session = await repo.startSession(plan.id, 'live', startedAt, 'UTC');
+  const ids = session.exercises[0]!.sets.map((set) => set.id);
+  await repo.updateSet('live', ids[2]!, { actualReps: null, actualWeightKg: 0, completed: false, rir: 1 }, updatedAt);
+  await repo.updateSet('live', ids[4]!, { actualReps: 6, actualWeightKg: 60, completed: true }, updatedAt);
+  await repo.updateSet('live', ids[0]!, { actualReps: 10, actualWeightKg: 45, completed: true }, updatedAt);
+  const read = async () => (await repo.getSession('live'))!.exercises[0]!.sets;
+  let sets = await read();
+  assert.deepEqual(sets.map((s) => [s.actualReps, s.actualWeightKg, s.completed]), [
+    [10, 45, true], [10, 45, false], [10, 0, false], [10, 45, false], [6, 60, true],
+  ]);
+  assert.equal(sets[2]?.rir, 1);
+  assert.equal((await repo.getSession('live'))?.exercises[1]?.sets[0]?.actualReps, null);
+  await repo.updateSet('live', ids[3]!, { actualReps: 10, actualWeightKg: 45, completed: false, editedFields: { reps: true } }, updatedAt);
+  const facts = { actualReps: 9, actualWeightKg: 42, completed: true };
+  await repo.updateSet('live', ids[1]!, facts, updatedAt);
+  await repo.updateSet('live', ids[1]!, facts, updatedAt);
+  sets = await read();
+  assert.deepEqual(sets.slice(2).map((s) => [s.actualReps, s.actualWeightKg, !!s.copiedReps, !!s.copiedWeight]), [
+    [9, 0, true, false], [10, 42, false, true], [6, 60, false, false],
+  ]);
+});
+
+test('v2 cold start cleans empty repeat chains while retaining active, partial facts, separate plans and dates', async (t) => {
+  const db = createSqliteTestDatabase();
+  t.after(() => db.close());
+  const interrupted: SqlDatabase = { ...db, transaction: (work) => db.transaction((connection) => work({
+    ...connection, async exec(sql) {
+      if (sql === 'PRAGMA user_version = 3') throw new Error('stop at v2');
+      return connection.exec(sql);
+    },
+  })) };
+  await assert.rejects(createWorkoutRepository(interrupted).initialize(), /stop at v2/);
+  await db.run("INSERT INTO templates(id,name,created_at,updated_at) VALUES('plan','A',?,?)", [createdAt, createdAt]);
+  async function insert(id: string, parent: string | null, day: string, status = 'completed', exercise = 'builtin:bench-press') {
+    await db.run(`INSERT INTO sessions(id,template_id,name,started_at,finished_at,time_zone,status,repeated_from_id,backdated)
+      VALUES(?,'plan','A',?,?,'UTC',?,?,?)`, [id, day, status === 'active' ? null : day, status, parent, Number(status === 'completed')]);
+    await db.run('INSERT INTO session_exercises(id,session_id,exercise_id,name,position) VALUES(?,?,?,?,0)', [id + '-e', id, exercise, exercise]);
+    await db.run('INSERT INTO session_sets(id,session_exercise_id,position,planned_reps,completed,updated_at) VALUES(?,?,0,8,0,?)', [id + '-s', id + '-e', day]);
+  }
+  await insert('source', null, '2026-11-12T12:00:00Z');
+  await insert('a', 'source', startedAt);
+  await insert('b', 'a', startedAt);
+  await insert('live', 'b', startedAt, 'active');
+  await db.run("UPDATE sessions SET rest_ends_at=? WHERE id='live'", [finishedAt]);
+  await insert('partial', null, startedAt);
+  await db.run("UPDATE session_sets SET actual_weight_kg=0 WHERE id='partial-s'");
+  await insert('rir', null, startedAt);
+  await db.run("UPDATE session_sets SET rir=0 WHERE id='rir-s'");
+  await insert('replacement', null, startedAt, 'completed', 'builtin:squat-barbell');
+  await insert('abandoned', null, startedAt, 'abandoned');
+  await insert('empty-1', null, '2026-11-01T12:00:00Z');
+  await insert('empty-2', null, '2026-11-01T12:01:00Z');
+  const repo = createWorkoutRepository(db);
+  const sessions = await repo.listSessions();
+  assert.deepEqual(sessions.map((s) => s.id).sort(), ['abandoned', 'empty-1', 'live', 'partial', 'replacement', 'rir', 'source']);
+  assert.equal((await repo.getSession('live'))?.repeatedFromId, 'source');
+  assert.equal((await repo.getSession('partial'))?.exercises[0]?.sets[0]?.actualWeightKg, 0);
+  assert.deepEqual(await createWorkoutRepository(db).listSessions(), sessions);
+  await repo.setRestDeadline('live', null);
+  const reopened = createWorkoutRepository(db);
+  assert.equal(await reopened.getSession('live'), null, 'an empty live duplicate yields to the day with facts');
+  assert.ok(await reopened.getSession('partial'));
+  const next = '2026-11-21T12:00:00Z';
+  await insert('empty-live', null, next, 'active');
+  await insert('accidental', null, next);
+  await insert('empty-source', null, startedAt);
+  await insert('next-repeat', 'empty-source', '2026-11-22T12:00:00Z');
+  const again = createWorkoutRepository(db);
+  assert.equal(await again.getSession('accidental'), null);
+  assert.equal((await again.getSession('empty-live'))?.status, 'active');
+  assert.equal(await again.getSession('empty-source'), null);
+  assert.equal((await again.getSession('next-repeat'))?.repeatedFromId, 'partial');
+  assert.deepEqual(await db.all('PRAGMA foreign_key_check'), []);
 });

@@ -103,3 +103,20 @@ const styles = StyleSheet.create({
   dateRow: { flexDirection: 'row', justifyContent: 'space-between' },
   axis: { ...Typography.micro, color: Colors.muted },
 });
+
+export function ExerciseTrend({ values }: { values: readonly (number | null)[] }) {
+  const recorded = values.filter((value): value is number => value !== null);
+  if (!recorded.length) return null;
+  const min = Math.min(...recorded);
+  const max = Math.max(...recorded);
+  const points = values.map((value, index) => value === null ? null : {
+    x: values.length === 1 ? 24 : 3 + index * 42 / (values.length - 1),
+    y: min === max ? 13 : 3 + (max - value) * 20 / (max - min),
+  });
+  const path = points.map((point, index) => point
+    ? `${points[index - 1] ? 'L' : 'M'}${point.x},${point.y}` : '').join(' ');
+  return <Svg width={48} height={26} accessible={false}>
+    <Path d={path} fill="none" stroke={Colors.muted} strokeWidth={1.5} />
+    {points.map((point, index) => point && <Circle key={index} cx={point.x} cy={point.y} r={2} fill={Colors.ink} />)}
+  </Svg>;
+}

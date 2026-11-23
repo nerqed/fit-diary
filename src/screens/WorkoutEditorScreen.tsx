@@ -30,17 +30,10 @@ function move<T>(items: T[], index: number, delta: number): T[] {
   return copy;
 }
 
-function nextTemplateName(templates: readonly WorkoutTemplate[]) {
-  const names = new Set(templates.map((item) => item.name));
-  let number = 1;
-  while (names.has(`Тренировка ${number}`)) number++;
-  return `Тренировка ${number}`;
-}
-
 function toTemplate(template: WorkoutTemplate, name: string, entries: DraftEntry[], catalog: Map<string, Exercise>): WorkoutTemplate {
   return {
     ...template,
-    name: name.trim() || template.name,
+    name,
     exercises: entries.map((entry) => ({
       ...entry,
       sets: entry.sets.map((set, index) => {
@@ -95,7 +88,7 @@ function SetInputs({ set, index, name, bodyweight, onChange }: {
 function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: string }) {
   const { controller, data, pending } = useWorkout();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [template] = useState(() => existing ?? { ...controller.newTemplate(), name: nextTemplateName(data.templates) });
+  const [template] = useState(() => existing ?? controller.newTemplate());
   const [name, setName] = useState(template.name);
   const [entries, setEntries] = useState<DraftEntry[]>(() => template.exercises.map((entry) => ({
     ...entry,
@@ -106,6 +99,8 @@ function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: str
   const saving = useRef(false);
   const startId = useRef<string | null>(null);
   const catalog = new Map(data.exercises.map((exercise) => [exercise.id, exercise]));
+  const suggestedName = entries.slice(0, 2).map((entry) => catalog.get(entry.exerciseId)?.name)
+    .filter(Boolean).join(' + ').slice(0, 200).trim() || 'Тренировка';
   const hasActiveSession = data.sessions.some((session) => session.status === 'active');
   const pastDay = day !== undefined && day < localDay();
   const canStart = !hasActiveSession || pastDay;
@@ -154,14 +149,14 @@ function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: str
     if (saving.current || pending || !entries.length) return;
     saving.current = true;
     try {
-      await controller.saveTemplate(toTemplate(template, name, entries, catalog));
+      await controller.saveTemplate(toTemplate(template, name.trim() || suggestedName, entries, catalog));
       if (andStart) {
         startId.current ??= controller.newId();
         const session = await controller.startSession(template.id, startId.current, day);
-        navigation.replace('WorkoutSession', session.backdated && session.status === 'completed'
+        navigation.replace('WorkoutSession', session.status === 'completed'
           ? { sessionId: session.id, edit: true } : { sessionId: session.id });
       } else {
-        navigation.popTo('Main', { screen: 'Workouts', params: { day } });
+        navigation.goBack();
       }
     } catch (error) {
       Alert.alert('Не удалось сохранить тренировку', error instanceof Error ? error.message : 'Попробуйте ещё раз.');
@@ -176,7 +171,7 @@ function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: str
         <Card style={styles.card}>
           <Text style={styles.hint}>Название</Text>
           <TextInput style={styles.nameInput} value={name} onChangeText={setName}
-            selectTextOnFocus maxLength={200} placeholder="Тренировка" placeholderTextColor={Colors.muted}
+            selectTextOnFocus maxLength={200} placeholder={suggestedName} placeholderTextColor={Colors.muted}
             accessibilityLabel="Название тренировки" />
         </Card>
         {canReorder && <Row><Chip title={reordering ? 'Готово' : 'Изменить порядок'} active={reordering}

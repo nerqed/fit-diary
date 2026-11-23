@@ -223,9 +223,63 @@ export function getExerciseProgress(sessions: readonly WorkoutSession[], exercis
   return { history, bestWeights: weightSeriesIn(history, fixedReps), records: exerciseRecordsIn(history, fixedReps) };
 }
 
+export type ExerciseSetResult = Readonly<{ weightKg: number; reps: number }>;
+export type ExerciseListProgress = Readonly<{
+  latest: ExerciseSetResult | null;
+  best: ExerciseSetResult | null;
+  bodyweight: boolean;
+  direction: 'up' | 'same' | 'down' | null;
+  trend: readonly (number | null)[];
+}>;
+
+function heaviestSet(row: ExerciseHistoryRow): ExerciseSetResult | null {
+  let result: ExerciseSetResult | null = null;
+  for (const { completed, actualWeightKg, actualReps } of row.sets) {
+    if (!completed || actualReps === null || actualWeightKg === null) continue;
+    if (!result || actualWeightKg > result.weightKg || (actualWeightKg === result.weightKg && actualReps > result.reps)) {
+      result = { weightKg: actualWeightKg, reps: actualReps };
+    }
+  }
+  return result;
+}
+
+/** Anchor comparisons to the latest heaviest set. Unloaded bodyweight sets compare reps. */
+export function getExerciseListProgress(sessions: readonly WorkoutSession[], exerciseId: string): ExerciseListProgress {
+  const history = getExerciseHistory(sessions, exerciseId);
+  const index = history.findLastIndex((row) => heaviestSet(row) !== null);
+  const row = history[index];
+  const latest = row && heaviestSet(row);
+  const bodyweight = isBodyweightExercise(exerciseId, row?.exerciseNames[0] ?? '');
+  if (!latest) return { latest: null, best: null, bodyweight, direction: null, trend: [] };
+
+  const unloaded = bodyweight && latest.weightKg === 0;
+  const series = history.slice(0, index + 1).map((entry) => {
+    if (!unloaded) {
+      const weight = bestAtReps(entry, latest.reps);
+      return bodyweight && weight === 0 ? null : weight;
+    }
+    let maxReps: number | null = null;
+    for (const set of entry.sets) {
+      if (set.completed && set.actualWeightKg === 0 && set.actualReps !== null) {
+        maxReps = Math.max(maxReps ?? 0, set.actualReps);
+      }
+    }
+    return maxReps;
+  });
+  const current = unloaded ? latest.reps : latest.weightKg;
+  const previous = series.at(-2);
+  const bestValue = series.reduce<number>((best, value) => Math.max(best, value ?? best), current);
+  return {
+    latest, bodyweight,
+    best: unloaded ? { weightKg: 0, reps: bestValue } : { weightKg: bestValue, reps: latest.reps },
+    direction: previous == null ? null : current > previous ? 'up' : current < previous ? 'down' : 'same',
+    trend: series.slice(-7),
+  };
+}
+
 export type SessionRecord = Readonly<{ exerciseId: string; exerciseName: string }> & (
-  | Readonly<{ kind: 'weight'; reps: number; weightKg: number }>
-  | Readonly<{ kind: 'volume'; volumeKgReps: number }>
+  | Readonly<{ kind: 'weight'; reps: number; weightKg: number; previousWeightKg: number }>
+  | Readonly<{ kind: 'volume'; volumeKgReps: number; previousVolumeKgReps: number }>
 );
 
 export function getSessionSummary(session: WorkoutSession, sessions: readonly WorkoutSession[]) {
@@ -243,15 +297,28 @@ export function getSessionSummary(session: WorkoutSession, sessions: readonly Wo
       const current = recordsIn(getExerciseHistory([session], exerciseId));
       for (const [reps, { weightKg }] of current.weights) {
         const best = previous.weights.get(reps);
-        if (!best || weightKg > best.weightKg) records.push({ exerciseId, exerciseName, kind: 'weight', reps, weightKg });
+        if (best && weightKg > best.weightKg) {
+          records.push({ exerciseId, exerciseName, kind: 'weight', reps, weightKg, previousWeightKg: best.weightKg });
+        }
       }
       const best = current.bestCompleteVolume;
-      if (best && (!previous.bestCompleteVolume || best.volumeKgReps > previous.bestCompleteVolume.volumeKgReps)) {
-        records.push({ exerciseId, exerciseName, kind: 'volume', volumeKgReps: best.volumeKgReps });
+      const priorVolume = previous.bestCompleteVolume?.volumeKgReps;
+      if (best && priorVolume !== undefined && best.volumeKgReps > priorVolume) {
+        records.push({ exerciseId, exerciseName, kind: 'volume', volumeKgReps: best.volumeKgReps, previousVolumeKgReps: priorVolume });
       }
     }
   }
-  return { completedSets: volume.totalSets, totalSets: sets.length, volume, records };
+  let bodyweightReps = 0;
+  for (const exercise of session.exercises) {
+    if (!isBodyweightExercise(exercise.exerciseId, exercise.name)) continue;
+    for (const set of exercise.sets) {
+      if (set.completed && set.actualWeightKg === 0) bodyweightReps += set.actualReps ?? 0;
+    }
+  }
+  const durationMs = session.status === 'completed' && !session.backdated && session.finishedAt !== null
+    ? instant(session.finishedAt) - instant(session.startedAt) : 0;
+  const durationMinutes = durationMs > 0 ? Math.max(1, Math.round(durationMs / 60_000)) : null;
+  return { completedSets: volume.totalSets, totalSets: sets.length, volume, records, bodyweightReps, durationMinutes };
 }
 
 export type WeightTrendPoint = BodyWeight & Readonly<{ averageKg: number }>;

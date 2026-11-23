@@ -38,7 +38,7 @@ export function suggestWeights(
   const bodyweight = isBodyweightExercise(exerciseId, name);
   const suggestions = new Map<string, number>();
   for (const set of previousSets) {
-    if (set.actualWeightKg === null) continue;
+    if (set.copiedWeight || set.actualWeightKg === null) continue;
     const canIncrease = targetsMet && !(bodyweight && set.actualWeightKg === 0);
     const weight = canIncrease ? Math.min(progressionRules.maximumWeightKg, set.actualWeightKg + step) : set.actualWeightKg;
     suggestions.set(set.id, weight);

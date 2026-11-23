@@ -2,10 +2,10 @@ import { WORKOUT_SCHEMA_VERSION } from '../../data/sqlite/migrations';
 import type { WorkoutData, WorkoutRepository } from '../workouts/model';
 import { validateWorkoutData, validateWorkoutTimestamp } from '../workouts/validation';
 
-export const BACKUP_FORMAT_VERSION = 2;
+export const BACKUP_FORMAT_VERSION = 3;
 export const MAX_BACKUP_BYTES = 16 * 1024 * 1024;
 export type WorkoutBackup = Readonly<{
-  kind: 'forma-workouts'; formatVersion: 1 | 2; schemaVersion: number; exportedAt: string; data: WorkoutData;
+  kind: 'forma-workouts'; formatVersion: 1 | 2 | 3; schemaVersion: number; exportedAt: string; data: WorkoutData;
 }>;
 export type BackupPreview = Readonly<{
   exportedAt: string; exercises: number; templates: number; sessions: number; bodyWeights: number;
@@ -50,15 +50,14 @@ export function parseWorkoutBackup(text: string): WorkoutBackup {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Неверный формат резервной копии.');
   const record = value as Record<string, unknown>;
   const keys = ['kind', 'formatVersion', 'schemaVersion', 'exportedAt', 'data'];
-  const legacy = record.formatVersion === 1 && record.schemaVersion === 1;
-  const current = record.formatVersion === BACKUP_FORMAT_VERSION && record.schemaVersion === WORKOUT_SCHEMA_VERSION;
+  const version = record.formatVersion;
   if (Object.keys(record).length !== keys.length || Object.keys(record).some((key) => !keys.includes(key))
-    || record.kind !== 'forma-workouts' || (!legacy && !current)) {
+    || record.kind !== 'forma-workouts' || (version !== 1 && version !== 2 && version !== 3) || record.schemaVersion !== version) {
     throw new Error('Версия или структура копии не поддерживается. База не изменена.');
   }
   return {
-    kind: 'forma-workouts', formatVersion: legacy ? 1 : BACKUP_FORMAT_VERSION, schemaVersion: legacy ? 1 : WORKOUT_SCHEMA_VERSION,
-    exportedAt: validateWorkoutTimestamp(record.exportedAt, 'exportedAt'), data: validateWorkoutData(record.data, legacy ? 1 : BACKUP_FORMAT_VERSION),
+    kind: 'forma-workouts', formatVersion: version, schemaVersion: version,
+    exportedAt: validateWorkoutTimestamp(record.exportedAt, 'exportedAt'), data: validateWorkoutData(record.data, version),
   };
 }
 

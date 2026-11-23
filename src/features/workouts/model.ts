@@ -18,13 +18,15 @@ export type TemplateExercise = Readonly<{
 }>;
 /** Array order is exercise/set order; persistence writes explicit positions. */
 export type WorkoutTemplate = Readonly<{
-  id: string; name: string; weekday: WorkoutWeekday | null;
+  id: string; name: string; archived?: boolean; weekday: WorkoutWeekday | null;
   exercises: readonly TemplateExercise[];
   createdAt: WorkoutTimestamp; updatedAt: WorkoutTimestamp;
 }>;
 export type PerformedSet = Readonly<{
   id: string; plannedReps: number; plannedWeightKg: number | null;
   actualReps: number | null; actualWeightKg: number | null;
+  /** Editable suggestions copied from an earlier set, tracked independently per field. */
+  copiedReps?: boolean; copiedWeight?: boolean;
   /** 3 is the “3+” category. */
   rir?: number | null;
   completed: boolean; updatedAt: WorkoutTimestamp;
@@ -53,6 +55,7 @@ export type WorkoutData = Readonly<{
   settings?: WorkoutSettings;
 }>;
 export type SetResult = Readonly<{
+  editedFields?: Readonly<{ reps?: boolean; weight?: boolean }>;
   actualReps: number | null; actualWeightKg: number | null; completed: boolean;
   rir?: number | null;
 }>;
@@ -68,7 +71,8 @@ export interface WorkoutRepository {
   deleteTemplate(id: string): Promise<void>;
   listSessions(): Promise<readonly WorkoutSession[]>;
   getSession(id: string): Promise<WorkoutSession | null>;
-  /** Retrying a start with the same sessionId returns the original snapshot. */
+  deleteSession(id: string): Promise<void>;
+  /** Reuse the current workout or a completed snapshot of this template on the selected day. */
   startSession(templateId: string, sessionId: string, startedAt: WorkoutTimestamp, timeZone: string, backdated?: boolean): Promise<WorkoutSession>;
   repeatSession(sourceSessionId: string, sessionId: string, startedAt: WorkoutTimestamp, timeZone: string, backdated?: boolean): Promise<WorkoutSession>;
   replaceSessionExercise(sessionId: string, sessionExerciseId: string, exerciseId: string): Promise<void>;

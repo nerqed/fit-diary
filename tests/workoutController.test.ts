@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWorkoutRepository } from '../src/data/sqlite/workoutRepository';
+import { getSessionSummary } from '../src/features/workouts/analytics';
 import { createWorkoutController, sessionView } from '../src/features/workouts/controller';
 import type { WorkoutSession } from '../src/features/workouts/model';
 import { sessionDay } from '../src/features/workouts/workoutDates';
@@ -73,6 +74,26 @@ test('previous values beside sets match exercise occurrence and set position, no
   assert.equal(view.exercises[1]!.sets[0]!.suggestedWeightKg, 42.5);
 });
 
+test('previous results keep manually entered fields and omit unconfirmed copied fields independently', () => {
+  const startedAt = '2026-11-16T10:00:00Z';
+  const partial = { plannedReps: 8, plannedWeightKg: 30, completed: false, actualReps: 7, actualWeightKg: 25, updatedAt: startedAt };
+  const previous: WorkoutSession = {
+    id: 'old', name: 'Жим', startedAt, finishedAt: startedAt, templateId: null,
+    timeZone: 'UTC', restEndsAt: null, status: 'completed',
+    exercises: [{ id: 'entry', exerciseId: 'bench', name: 'Жим', sets: [
+      { ...partial, id: 'both-copied', copiedReps: true, copiedWeight: true },
+      { ...partial, id: 'manual-weight', copiedReps: true },
+      { ...partial, id: 'manual-reps', copiedWeight: true },
+    ] }],
+  };
+  const current = { ...previous, id: 'new', startedAt: '2026-11-17T10:00:00Z', finishedAt: null, status: 'active' as const };
+  const sets = sessionView(current, [previous, current], Date.parse(current.startedAt)).exercises[0]!.sets;
+  assert.deepEqual(sets.map((set) => set.previous && [set.previous.actualWeightKg, set.previous.actualReps]), [
+    null, [25, null], [null, 7],
+  ]);
+  assert.deepEqual(sets.map((set) => set.suggestedWeightKg), [null, 25, null]);
+});
+
 test('copy retry after a committed write and a failed refresh recovers the one saved copy', async () => {
   const database = createSqliteTestDatabase();
   const repository = createWorkoutRepository(database);
@@ -123,9 +144,10 @@ test('retrospective sessions survive a controller restart and edits recalculate 
     assert.equal(sessionDay(saved), '2026-11-02');
     await controller.saveSettings({ showRir: true, showNotes: false });
     const live = await controller.repeatSession(past.id, 'live');
-    const secondPast = await controller.startSession(template.id, 'second-past', '2026-11-02');
+    const reopened = await controller.startSession(template.id, 'same-day', '2026-11-02');
+    assert.equal(reopened.id, past.id);
+    const secondPast = await controller.startSession(template.id, 'second-past', '2026-11-03');
     assert.equal(secondPast.status, 'completed', 'backfilling leaves the live session active');
-    assert.ok(Date.parse(secondPast.startedAt) > Date.parse(past.startedAt), 'two entries on one retrospective day retain order');
     assert.equal((await repository.getSession(live.id))?.status, 'active');
     const secondSet = secondPast.exercises[0]!.sets[0]!.id;
     await controller.updateSet(secondPast.id, secondSet, { actualWeightKg: 45, actualReps: null, completed: false });
@@ -144,5 +166,43 @@ test('retrospective sessions survive a controller restart and edits recalculate 
     await controller.saveBodyWeight('2026-11-02', 71);
     await assert.rejects(controller.saveBodyWeight('2026-11-26', 72));
     assert.deepEqual(controller.getSnapshot().data?.bodyWeights, [{ date: '2026-11-02', weightKg: 71 }]);
+  } finally { database.close(); }
+});
+
+test('deleting a completed session refreshes history and recalculates records for later workouts', async () => {
+  const database = createSqliteTestDatabase();
+  const repository = createWorkoutRepository(database);
+  const controller = createWorkoutController(repository, {
+    now: () => '2026-11-24T10:00:00Z', id: () => 'template', timeZone: () => 'UTC',
+  });
+  try {
+    await controller.load();
+    const exerciseId = 'builtin:bench-press';
+    const template = { ...controller.newTemplate(), name: 'Жим', exercises: [
+      { id: 'entry', exerciseId, sets: [{ id: 'set', reps: 8, weightKg: null }] },
+    ] };
+    await controller.saveTemplate(template);
+    for (const [day, weight] of [['01', 40], ['02', 60], ['03', 50]] as const) {
+      const session = await controller.startSession(template.id, day, `2026-11-${day}`);
+      await controller.updateSet(session.id, session.exercises[0]!.sets[0]!.id, {
+        actualWeightKg: weight, actualReps: 8, completed: true,
+      });
+    }
+    function latestSummary() {
+      const sessions = controller.getSnapshot().data!.sessions;
+      return getSessionSummary(sessions.find((item) => item.id === '03')!, sessions);
+    }
+    assert.deepEqual(latestSummary().records, []);
+    await controller.deleteSession('02');
+    const progress = controller.getProgress(exerciseId, 8);
+    assert.deepEqual(progress.history.map((row) => row.sessionId), ['01', '03']);
+    assert.equal(progress.records.bestWeightAtReps?.weightKg, 50);
+    assert.deepEqual(latestSummary().records, [
+      { exerciseId, exerciseName: progress.history[1]!.exerciseNames[0], kind: 'weight', reps: 8, weightKg: 50, previousWeightKg: 40 },
+      { exerciseId, exerciseName: progress.history[1]!.exerciseNames[0], kind: 'volume', volumeKgReps: 400, previousVolumeKgReps: 320 },
+    ]);
+    await controller.deleteSession('01');
+    assert.deepEqual(latestSummary().records, []);
+    assert.equal(controller.getSnapshot().pending, 0);
   } finally { database.close(); }
 });

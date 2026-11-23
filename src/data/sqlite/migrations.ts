@@ -1,7 +1,7 @@
 import type { SqlDatabase } from './connection';
 import { builtinExercises } from '../exercises';
 
-export const WORKOUT_SCHEMA_VERSION = 2;
+export const WORKOUT_SCHEMA_VERSION = 3;
 
 const migrations = [
   `CREATE TABLE exercises (
@@ -60,6 +60,11 @@ const migrations = [
     show_rir INTEGER NOT NULL CHECK(show_rir IN (0,1)),
     show_notes INTEGER NOT NULL CHECK(show_notes IN (0,1))
   );`,
+  `ALTER TABLE templates ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1));
+  ALTER TABLE session_sets ADD COLUMN copied_reps INTEGER NOT NULL DEFAULT 0 CHECK(copied_reps IN (0,1));
+  ALTER TABLE session_sets ADD COLUMN copied_weight INTEGER NOT NULL DEFAULT 0 CHECK(copied_weight IN (0,1));
+  CREATE INDEX sessions_by_template ON sessions(template_id,status);
+  CREATE INDEX session_repeat_source ON sessions(repeated_from_id);`,
 ] as const;
 
 export async function migrateWorkoutDatabase(database: SqlDatabase): Promise<void> {

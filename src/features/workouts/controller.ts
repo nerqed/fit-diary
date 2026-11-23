@@ -40,10 +40,12 @@ export function sessionView(session: WorkoutSession, sessions: readonly WorkoutS
         bodyweight: isBodyweightExercise(exercise.exerciseId, exercise.name),
         sets: exercise.sets.map((set, setIndex) => {
           const old = previousSets.find((item) => item.setPosition === setIndex);
-          const hasResult = old && (old.actualWeightKg !== null || old.actualReps !== null);
+          const actualWeightKg = old?.copiedWeight ? null : old?.actualWeightKg ?? null;
+          const actualReps = old?.copiedReps ? null : old?.actualReps ?? null;
+          const hasResult = actualWeightKg !== null || actualReps !== null;
           return { ...set, suggestedWeightKg: old ? suggestions.get(old.id) ?? null : null, previous: previous && hasResult ? {
             sessionId: previous.sessionId, startedAt: previous.startedAt,
-            actualReps: old.actualReps, actualWeightKg: old.actualWeightKg,
+            actualReps, actualWeightKg,
           } : null };
         }),
       };
@@ -121,6 +123,7 @@ export function createWorkoutController(repository: WorkoutRepository, dependenc
       return saved;
     },
     deleteTemplate: (templateId: string) => perform(() => repository.deleteTemplate(templateId)),
+    deleteSession: (sessionId: string) => perform(() => repository.deleteSession(sessionId)),
     startSession: (templateId: string, sessionId: string, day?: string) => perform(() => {
       const { startedAt, timeZone, backdated } = startTime(day);
       return repository.startSession(templateId, sessionId, startedAt, timeZone, backdated);

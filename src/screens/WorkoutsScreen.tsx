@@ -1,17 +1,19 @@
 import { useRef } from 'react';
-import { useNavigation, useRoute, type CompositeNavigationProp, type RouteProp } from '@react-navigation/native';
+import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { Alert, StyleSheet, Text } from 'react-native';
+import { ActionSheetIOS, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useWorkout } from '../features/workouts/WorkoutContext';
 import type { WorkoutSession, WorkoutTemplate } from '../features/workouts/model';
-import { formatDay, localDay, sessionDay } from '../features/workouts/workoutDates';
+import { localDay } from '../features/workouts/workoutDates';
+import { suggestedTemplate } from '../features/workouts/workoutLibrary';
 import type { MainTabParamList, RootStackParamList } from '../navigation/types';
-import { Colors, Spacing, Typography, weekdayLabel } from '../theme';
-import { Card, SectionHeader } from '../theme/components';
+import { Colors, Radii, Spacing, Typography, weekdayLabel } from '../theme';
+import { SectionHeader } from '../theme/components';
 import { ScreenShell } from './ScreenShell';
-import { Chip, PrimaryButton, Row } from './ui';
+import { SwipeDeleteRow } from './SwipeDeleteRow';
+import { PrimaryButton } from './ui';
 
 type Navigation = CompositeNavigationProp<
   BottomTabNavigationProp<MainTabParamList, 'Workouts'>,
@@ -20,18 +22,12 @@ type Navigation = CompositeNavigationProp<
 
 export function WorkoutsScreen() {
   const navigation = useNavigation<Navigation>();
-  const route = useRoute<RouteProp<MainTabParamList, 'Workouts'>>();
   const { controller, data, pending } = useWorkout();
   const busy = useRef(false);
   const intent = useRef<{ key: string; id: string } | null>(null);
-  const today = localDay();
-  const day = route.params?.day === today ? undefined : route.params?.day;
-  const targetDay = day ?? today;
   const active = data.sessions.find((session) => session.status === 'active');
-  const pastDay = day !== undefined && day < today;
-  const canStart = !active || pastDay;
-  // The repository lists sessions newest first. A retro entry only repeats workouts up to its own day.
-  const last = data.sessions.find((session) => session.status === 'completed' && (!day || sessionDay(session) <= day));
+  const templates = data.templates.filter((template) => !template.archived);
+  const suggested = suggestedTemplate(templates, data.sessions);
   const catalog = new Map(data.exercises.map((exercise) => [exercise.id, exercise.name]));
 
   async function act(key: string, operation: (id: string) => Promise<void>) {
@@ -48,74 +44,76 @@ export function WorkoutsScreen() {
     }
   }
 
-  function openStarted(session: WorkoutSession) {
-    if (route.params?.day) navigation.setParams({ day: undefined });
-    navigation.navigate('WorkoutSession', session.backdated && session.status === 'completed'
+  function openSession(session: WorkoutSession) {
+    navigation.navigate('WorkoutSession', session.status === 'completed'
       ? { sessionId: session.id, edit: true } : { sessionId: session.id });
   }
 
+  function start(template: WorkoutTemplate) {
+    void act(`start:${template.id}:${localDay()}`, async (id) => openSession(await controller.startSession(template.id, id)));
+  }
+
   function confirmDelete(template: WorkoutTemplate) {
-    Alert.alert('Удалить шаблон?', `«${template.name}». Проведённые тренировки сохранятся в истории.`, [
+    const hasHistory = data.sessions.some((session) => session.templateId === template.id);
+    const action = hasHistory ? 'Архивировать' : 'Удалить';
+    const message = hasHistory ? 'Шаблон исчезнет из библиотеки. Записанные тренировки сохранятся в истории.' : undefined;
+    Alert.alert(`${action} «${template.name}»?`, message, [
       { text: 'Отмена', style: 'cancel' },
-      { text: 'Удалить', style: 'destructive', onPress: () => {
+      { text: action, style: 'destructive', onPress: () => {
         void act(`delete:${template.id}`, () => controller.deleteTemplate(template.id));
       } },
     ]);
   }
 
+  function showActions(template: WorkoutTemplate) {
+    ActionSheetIOS.showActionSheetWithOptions({
+      title: template.name, options: ['Изменить', 'Скопировать', 'Удалить', 'Отмена'],
+      cancelButtonIndex: 3, destructiveButtonIndex: 2,
+    }, (index) => {
+      if (index === 0) navigation.navigate('WorkoutEditor', { templateId: template.id });
+      if (index === 1) {
+        void act(`copy:${template.id}`, async (id) => {
+          const copy = await controller.copyTemplate(template.id, id);
+          navigation.navigate('WorkoutEditor', { templateId: copy.id });
+        });
+      }
+      if (index === 2) confirmDelete(template);
+    });
+  }
+
   return (
     <ScreenShell title="Тренировки">
-      {day && (
-        <Card style={styles.card}>
-          <Text style={styles.name}>Запись за {formatDay(day)}</Text>
-          <PrimaryButton secondary title="Перейти к сегодняшнему дню" onPress={() => navigation.setParams({ day: undefined })} />
-        </Card>
-      )}
-      {active && (
-        <Card style={styles.card}>
-          <Text style={styles.meta}>Начата {formatDay(sessionDay(active))}</Text>
-          <Text style={styles.name}>{active.name}</Text>
-          <PrimaryButton title="Продолжить тренировку" onPress={() => navigation.navigate('WorkoutSession', { sessionId: active.id })} />
-        </Card>
-      )}
-      {last && canStart && (
-        <Card style={styles.card}>
-          <Text style={styles.meta}>{formatDay(sessionDay(last))} · {last.name}</Text>
-          <PrimaryButton title="Повторить прошлую тренировку" disabled={pending}
-            onPress={() => { void act(`repeat:${last.id}:${targetDay}`, async (id) => openStarted(await controller.repeatSession(last.id, id, day))); }} />
-        </Card>
-      )}
-      {data.templates.length > 0 && <SectionHeader title="Мои шаблоны" />}
-      {data.templates.map((template) => (
-        <Card key={template.id} style={styles.card}>
-          {template.weekday && <Text style={styles.meta}>{weekdayLabel[template.weekday]}</Text>}
-          <Text style={styles.name}>{template.name}</Text>
-          <Text style={styles.meta} numberOfLines={2}>
-            {template.exercises.map((entry) => catalog.get(entry.exerciseId)).join(' · ')}
-          </Text>
-          {canStart && <PrimaryButton title={pastDay ? `Заполнить за ${formatDay(day)}` : 'Начать'} disabled={pending}
-            onPress={() => { void act(`start:${template.id}:${targetDay}`, async (id) => openStarted(await controller.startSession(template.id, id, day))); }} />}
-          <Row>
-            <Chip title="Изменить" onPress={() => navigation.navigate('WorkoutEditor', { templateId: template.id, day })} />
-            <Chip title="Скопировать" onPress={() => {
-              void act(`copy:${template.id}`, async (id) => {
-                const copy = await controller.copyTemplate(template.id, id);
-                navigation.navigate('WorkoutEditor', { templateId: copy.id, day });
-              });
-            }} />
-            <Chip title="Удалить" onPress={() => confirmDelete(template)} />
-          </Row>
-        </Card>
+      {active ? <PrimaryButton title={`Продолжить: ${active.name}`} onPress={() => openSession(active)} />
+        : suggested ? <PrimaryButton title={`Начать: ${suggested.name}`} disabled={pending} onPress={() => start(suggested)} />
+          : <PrimaryButton title="Создать тренировку" onPress={() => navigation.navigate('WorkoutEditor')} />}
+      {templates.length > 0 && <SectionHeader title="Мои шаблоны" />}
+      {templates.map((template) => (
+        <SwipeDeleteRow key={template.id} label={`Удалить шаблон «${template.name}»`} onDelete={() => confirmDelete(template)}>
+          <View style={styles.card}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Начать тренировку «${template.name}»`}
+              disabled={pending} onPress={() => start(template)} style={styles.content}>
+              {template.weekday && <Text style={styles.meta}>{weekdayLabel[template.weekday]}</Text>}
+              <Text style={styles.name}>{template.name}</Text>
+              <Text style={styles.meta} numberOfLines={2}>
+                {template.exercises.map((entry) => catalog.get(entry.exerciseId)).join(' · ')}
+              </Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Действия с шаблоном «${template.name}»`}
+              disabled={pending} onPress={() => showActions(template)} style={styles.actions}>
+              <Text style={styles.name}>…</Text>
+            </Pressable>
+          </View>
+        </SwipeDeleteRow>
       ))}
-      <PrimaryButton title={data.templates.length ? 'Создать тренировку' : 'Создай первую тренировку'}
-        secondary={data.templates.length > 0} onPress={() => navigation.navigate('WorkoutEditor', { day })} />
-      <PrimaryButton title="Резервные копии" secondary onPress={() => navigation.navigate('Backups')} />
+      {(active || suggested) && <PrimaryButton secondary title="Создать тренировку" onPress={() => navigation.navigate('WorkoutEditor')} />}
     </ScreenShell>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { gap: Spacing.m },
+  card: { flexDirection: 'row', backgroundColor: Colors.card, borderRadius: Radii.l },
+  content: { flex: 1, padding: Spacing.l, gap: Spacing.xs },
+  actions: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   name: { ...Typography.h3, color: Colors.ink },
   meta: { ...Typography.caption, color: Colors.muted },
 });
