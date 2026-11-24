@@ -1,11 +1,12 @@
 import { builtinExercises } from '../../data/exercises';
 import type { PerformedSet } from './model';
+import { MAX_INPUT_WEIGHT_KG } from './validation';
 
 export const progressionRules = {
   incrementKg: 2.5,
   dumbbellIncrementKg: 1,
   minimumRirForIncrease: 2,
-  maximumWeightKg: 10_000,
+  maximumWeightKg: MAX_INPUT_WEIGHT_KG,
   dumbbellIds: new Set([
     'builtin:squat-goblet', 'builtin:lunge-dumbbell', 'builtin:dumbbell-bench', 'builtin:dumbbell-fly',
     'builtin:dumbbell-row', 'builtin:dumbbell-shoulder', 'builtin:lateral-raise', 'builtin:rear-delt',
@@ -38,7 +39,7 @@ export function suggestWeights(
   const bodyweight = isBodyweightExercise(exerciseId, name);
   const suggestions = new Map<string, number>();
   for (const set of previousSets) {
-    if (set.copiedWeight || set.actualWeightKg === null) continue;
+    if (set.copiedWeight || set.actualWeightKg === null || set.actualWeightKg > progressionRules.maximumWeightKg) continue;
     const canIncrease = targetsMet && !(bodyweight && set.actualWeightKg === 0);
     const weight = canIncrease ? Math.min(progressionRules.maximumWeightKg, set.actualWeightKg + step) : set.actualWeightKg;
     suggestions.set(set.id, weight);

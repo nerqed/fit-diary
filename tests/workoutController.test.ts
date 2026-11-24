@@ -26,6 +26,8 @@ test('controller exposes durable data after successful actions and keeps prior d
     const session = await controller.startSession(draft.id, 'intent-session');
     await controller.startSession(draft.id, 'intent-session');
     assert.equal(controller.getSnapshot().data?.sessions.length, 1);
+    await assert.rejects(controller.finishSession(session.id, 'completed'), /Отметь хотя бы один подход/);
+    assert.equal(controller.getSessionView(session.id, Date.parse(clock))?.session.status, 'active');
     const setId = session.exercises[0]!.sets[0]!.id;
     const result = { actualReps: 8, actualWeightKg: 40, completed: true };
     await controller.updateSet(session.id, setId, result, 90);
@@ -160,6 +162,7 @@ test('retrospective sessions survive a controller restart and edits recalculate 
     assert.equal(hint(), 50);
     assert.equal(controller.getProgress('builtin:bench-press', 8).records.bestWeightAtReps, null);
     clock = '2026-11-24T19:30:00Z'; // 00:30 the following day
+    await controller.updateSet(live.id, live.exercises[0]!.sets[0]!.id, { actualWeightKg: 50, actualReps: 7, completed: true });
     await controller.finishSession(live.id, 'completed');
     assert.equal(controller.getSessionView(live.id, Date.parse(clock))?.session.finishedAt, clock);
     await controller.saveBodyWeight('2026-11-02', 70);
@@ -169,7 +172,7 @@ test('retrospective sessions survive a controller restart and edits recalculate 
   } finally { database.close(); }
 });
 
-test('deleting a completed session refreshes history and recalculates records for later workouts', async () => {
+test('deleting a legacy workout with an out-of-range weight refreshes history and recalculates records', async () => {
   const database = createSqliteTestDatabase();
   const repository = createWorkoutRepository(database);
   const controller = createWorkoutController(repository, {
@@ -188,6 +191,10 @@ test('deleting a completed session refreshes history and recalculates records fo
         actualWeightKg: weight, actualReps: 8, completed: true,
       });
     }
+    const legacySetId = (await repository.getSession('02'))!.exercises[0]!.sets[0]!.id;
+    await database.run('UPDATE session_sets SET actual_weight_kg = ? WHERE id = ?', [790, legacySetId]);
+    await controller.refresh();
+    assert.equal(controller.getProgress(exerciseId, 8).records.bestWeightAtReps?.weightKg, 790);
     function latestSummary() {
       const sessions = controller.getSnapshot().data!.sessions;
       return getSessionSummary(sessions.find((item) => item.id === '03')!, sessions);

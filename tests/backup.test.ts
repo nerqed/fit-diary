@@ -80,6 +80,45 @@ test('backup round trip preserves every collection, stable IDs, timestamps, null
   assert.deepEqual(parseWorkoutBackup(`\uFEFF${text}`), backup);
 });
 
+test('legacy values survive backup restore and unrelated edits while new input respects its limits', async (t) => {
+  const database = createSqliteTestDatabase();
+  t.after(() => database.close());
+  const repository = createWorkoutRepository(database);
+  const { writer } = recordingWriter();
+  const original = fixture();
+  const [template] = original.templates;
+  const [session] = original.sessions;
+  const [templateExercise] = template!.exercises;
+  const [sessionExercise] = session!.exercises;
+  const [planned, nextPlanned] = templateExercise!.sets;
+  const [performed, nextPerformed] = sessionExercise!.sets;
+  const legacyTemplate = { ...template!, exercises: [{ ...templateExercise!, sets: [
+    { ...planned!, reps: 350, weightKg: 790 }, nextPlanned!,
+  ] }] };
+  const legacyFacts = { actualReps: 350, actualWeightKg: 790, completed: true };
+  const legacySession = { ...session!, exercises: [{ ...sessionExercise!, sets: [
+    { ...performed!, plannedReps: 350, plannedWeightKg: 790, ...legacyFacts }, nextPerformed!,
+  ] }] };
+  const legacy = { ...original, templates: [legacyTemplate], sessions: [legacySession] };
+
+  await importWorkoutBackup(repository, writer, serializeWorkoutBackup(legacy, now), 'replace-all', now);
+  assert.deepEqual(await repository.exportData(), legacy);
+  await repository.saveTemplate({ ...legacyTemplate, name: 'Новое название', updatedAt: now });
+  await repository.updateSet('session', 'session-set-1', { ...legacyFacts, rir: 2 }, now);
+  await repository.updateSet('session', 'session-set-2', { actualReps: 300, actualWeightKg: 600, completed: true }, now);
+  await repository.setRestDeadline('session', null);
+  await repository.finishSession('session', 'completed', now);
+
+  const updated = parseWorkoutBackup(serializeWorkoutBackup(await repository.exportData(), now)).data;
+  assert.deepEqual(updated.templates[0]?.exercises[0]?.sets[0], legacyTemplate.exercises[0]?.sets[0]);
+  assert.deepEqual(updated.sessions[0]?.exercises[0]?.sets[0], { ...legacySession.exercises[0]?.sets[0], rir: 2, updatedAt: now });
+  assert.equal(updated.sessions[0]?.exercises[0]?.sets[1]?.actualWeightKg, 600);
+  await assert.rejects(repository.saveTemplate({ ...legacyTemplate, exercises: [{ ...templateExercise!, sets: [
+    { ...planned!, reps: 301 }, nextPlanned!,
+  ] }], updatedAt: now }), /до 300 повторений/);
+  await assert.rejects(repository.updateSet('session', 'session-set-1', { ...legacyFacts, actualWeightKg: 791 }, now), /до 600 кг/);
+});
+
 test('unsupported versions, foreign formats and unknown fields are rejected rather than discarded', () => {
   const valid = JSON.parse(serializeWorkoutBackup(fixture(), now)) as Record<string, unknown>;
   const cases = [

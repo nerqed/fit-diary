@@ -91,7 +91,7 @@ test('best-weight graph compares only fixed reps and has null gaps, including kn
   assert.throws(() => getBestWeightSeries(fixtures, 'squat', 8.5), RangeError);
 });
 
-test('previous session is completed before current start, excludes current and preserves last values', () => {
+test('previous session is the latest completed workout by start time, even when it overlaps the current workout', () => {
   const old = session('old', [exercise('old-entry', 'Старое имя', [set('old-set', 20, 8)])], {
     startedAt: '2026-11-01T10:00:00+05:00', finishedAt: '2026-11-01T11:00:00+05:00',
   });
@@ -105,13 +105,13 @@ test('previous session is completed before current start, excludes current and p
   const abandoned = session('abandoned', prior.exercises, {
     startedAt: '2026-11-11T10:00:00+05:00', finishedAt: '2026-11-11T11:00:00+05:00', status: 'abandoned',
   });
-  const overlapping = session('overlap', prior.exercises, {
+  const overlapping = session('overlap', [exercise('overlap-entry', 'Новое имя', [set('overlap-set', 35, 8)])], {
     startedAt: '2026-11-11T10:00:00+05:00', finishedAt: '2026-11-13T11:00:00+05:00',
   });
   const values = [current, active, old, prior, abandoned, overlapping];
   const row = getPreviousExerciseSession(values, 'squat', current.startedAt, current.id);
-  assert.equal(row?.sessionId, 'prior');
-  assert.equal(row?.sets[0]?.actualWeightKg, 30);
+  assert.equal(row?.sessionId, 'overlap');
+  assert.equal(row?.sets[0]?.actualWeightKg, 35);
   assert.equal(getPreviousExerciseSession(values, 'missing', current.startedAt, current.id), null);
   // Explicit exclusion also works when the queried cutoff lies after a completed current session.
   assert.equal(getPreviousExerciseSession([prior, current], 'squat', '2026-11-20T00:00:00Z', current.id)?.sessionId, 'prior');
@@ -174,6 +174,8 @@ test('weight suggestions require all planned sets and use actual weights and the
   const suggested = (id: string, name: string, previous: readonly PerformedSet[]) =>
     [...suggestWeights(id, name, previous, false).values()];
   assert.deepEqual(suggested('builtin:bench-press', 'Жим', inputs), [62.5, 57.5]);
+  assert.deepEqual(suggested('builtin:bench-press', 'Жим', [set('a', 599, 8)]), [600]);
+  assert.deepEqual(suggested('builtin:bench-press', 'Жим', [set('a', 790, 8), set('b', 790, 7)]), []);
   assert.deepEqual(suggested('builtin:hammer-curl', 'Молотки', inputs), [61, 56]);
   assert.deepEqual(suggested('custom', 'Жим гантели лёжа', inputs), [61, 56]);
   assert.deepEqual(suggested('bench', 'Жим', [inputs[0]!, set('b', 55, 7)]), [60, 55]);
