@@ -318,6 +318,8 @@ test('session/set retries are idempotent, partial facts survive, finish clears t
     assert.equal((await repository.getSession('session-a'))?.exercises[0]?.sets[0]?.actualWeightKg, null);
     await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:1', { actualReps: null, actualWeightKg: 20, completed: true }, updatedAt), /повторений/);
     await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:0', { ...result, actualWeightKg: -1 }, updatedAt), /диапазона/);
+    await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:0', { ...result, actualWeightKg: 600.1 }, updatedAt), /setResult.actualWeightKg/);
+    await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:0', { ...result, actualReps: 301 }, updatedAt), /setResult.actualReps/);
     const unexpectedPlanEdit = { ...result, plannedReps: 99 };
     await assert.rejects(repository.updateSet('session-a', 'session-a:set:0:0', unexpectedPlanEdit, updatedAt), /состав полей/);
     await repository.setRestDeadline('session-a', '2026-11-17T11:06:30+05:00');

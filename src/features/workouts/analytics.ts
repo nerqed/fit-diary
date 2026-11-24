@@ -134,7 +134,7 @@ export function getExerciseHistory(
   });
 }
 
-/** Select the latest prior session which was already completed when this session started. */
+/** Select the completed exercise session with the latest start before the given timestamp. */
 export function getPreviousExerciseSession(
   sessions: readonly WorkoutSession[],
   exerciseId: string,
@@ -147,7 +147,7 @@ export function getPreviousExerciseSession(
   for (const session of sessions) {
     if (session.id === excludeSessionId || session.status !== 'completed' || !session.finishedAt) continue;
     const start = instant(session.startedAt);
-    if (start >= cutoff || start < latestStart || instant(session.finishedAt) > cutoff) continue;
+    if (start >= cutoff || start < latestStart) continue;
     if (start === latestStart && latest && latest.id >= session.id) continue;
     if (session.exercises.some((exercise) => exercise.exerciseId === exerciseId)) {
       latest = session;

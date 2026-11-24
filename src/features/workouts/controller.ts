@@ -141,6 +141,9 @@ export function createWorkoutController(repository: WorkoutRepository, dependenc
     }),
     finishSession: (sessionId: string, status: 'completed' | 'abandoned') => perform(async () => {
       const session = await repository.getSession(sessionId);
+      if (status === 'completed' && !(session?.exercises.some((e) => e.sets.some((s) => s.completed)) ?? false)) {
+        throw new Error('Отметь хотя бы один подход перед завершением.');
+      }
       await repository.finishSession(sessionId, status, session?.backdated ? session.startedAt : dependencies.now());
     }),
     startRest: (sessionId: string, seconds: number) => perform(async () => {

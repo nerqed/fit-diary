@@ -36,9 +36,10 @@ function readNumber(text: string, field: keyof SetInputs) {
   if (!value) return null;
   const number = Number(value);
   const valid = field === 'reps' ? /^\d+$/.test(value) : /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value);
-  if (!valid || !Number.isFinite(number) || number > 10_000) {
-    throw new Error(field === 'reps' ? 'Укажите целое число повторений от 0 до 10 000.'
-      : 'Укажите вес от 0 до 10 000 кг или оставьте поле пустым.');
+  const maximum = field === 'reps' ? 300 : 600;
+  if (!valid || !Number.isFinite(number) || number > maximum) {
+    throw new Error(field === 'reps' ? 'Укажите целое число повторений от 0 до 300.'
+      : 'Укажите вес от 0 до 600 кг или оставьте поле пустым.');
   }
   return number;
 }
@@ -94,6 +95,7 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
     if (values.reps !== undefined) actualReps = readNumber(values.reps, 'reps');
     if (confirming && entry.bodyweight && actualWeightKg === null) actualWeightKg = 0;
     if (confirming && !actualReps) throw new Error('Для отметки подхода укажите число выполненных повторений.');
+    if (confirming && !entry.bodyweight && actualWeightKg === null) throw new Error('Укажите вес перед отметкой подхода.');
     const completed = action.completed ?? (set.completed && actualReps !== null && actualReps > 0);
     const rir = action.rir === undefined ? set.rir ?? null : action.rir;
     const editedFields = { weight: matching?.weight !== undefined, reps: matching?.reps !== undefined };

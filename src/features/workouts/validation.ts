@@ -56,7 +56,7 @@ function number(value: unknown, path: string, integer: boolean, min: number, max
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) fail(path, 'число вне допустимого диапазона');
   return value;
 }
-function weight(value: unknown, path: string): number | null { return value === null ? null : number(value, path, false, 0, 10_000); }
+function weight(value: unknown, path: string): number | null { return value === null ? null : number(value, path, false, 0, 600); }
 function boolean(value: unknown, path: string): boolean { if (typeof value !== 'boolean') fail(path, 'ожидалось логическое значение'); return value; }
 function unique(id: string, seen: Set<string>, path: string): void { if (seen.has(id)) fail(path, `повтор идентификатора ${id}`); seen.add(id); }
 
@@ -81,7 +81,7 @@ export function validateWorkoutSettings(input: unknown): WorkoutSettings {
 
 export function validateSetResult(input: unknown): SetResult {
   const data = object(input, ['actualReps', 'actualWeightKg', 'completed'], 'setResult', ['rir', 'editedFields']);
-  const actualReps = data.actualReps === null ? null : number(data.actualReps, 'setResult.actualReps', true, 0, 10_000);
+  const actualReps = data.actualReps === null ? null : number(data.actualReps, 'setResult.actualReps', true, 0, 300);
   const completed = boolean(data.completed, 'setResult.completed');
   if (completed && (actualReps === null || actualReps === 0)) fail('setResult.actualReps', 'выполненный подход требует положительного факта повторений');
   const fields = Object.hasOwn(data, 'editedFields') ? object(data.editedFields, [], 'setResult.editedFields', ['reps', 'weight']) : {};
@@ -120,7 +120,7 @@ export function validateTemplate(input: unknown, version: WorkoutFormat = 3): Wo
     const sets = array(item.sets, 100, 'template.sets').map((inputSet): PlannedSet => {
       const row = object(inputSet, ['id', 'reps', 'weightKg'], 'template.set');
       const setId = validateWorkoutId(row.id); unique(setId, ids, 'template.set.id');
-      return { id: setId, reps: number(row.reps, 'template.set.reps', true, 1, 10_000), weightKg: weight(row.weightKg, 'template.set.weightKg') };
+      return { id: setId, reps: number(row.reps, 'template.set.reps', true, 1, 300), weightKg: weight(row.weightKg, 'template.set.weightKg') };
     });
     if (sets.length === 0) fail('template.sets', 'упражнению нужен хотя бы один подход');
     return { id, exerciseId: validateWorkoutId(item.exerciseId), sets };
@@ -151,7 +151,7 @@ export function validateSession(input: unknown, version: WorkoutFormat = 3): Wor
     const sets = array(item.sets, 100, 'session.sets').map((inputSet): PerformedSet => {
       const row = object(inputSet, ['id', 'plannedReps', 'plannedWeightKg', 'actualReps', 'actualWeightKg', 'completed', 'updatedAt'], 'session.set', version === 3 ? ['rir', 'copiedReps', 'copiedWeight'] : version === 2 ? ['rir'] : []);
       const setId = validateWorkoutId(row.id); unique(setId, ids, 'session.set.id');
-      const actualReps = row.actualReps === null ? null : number(row.actualReps, 'session.set.actualReps', true, 0, 10_000);
+      const actualReps = row.actualReps === null ? null : number(row.actualReps, 'session.set.actualReps', true, 0, 300);
       const completed = boolean(row.completed, 'session.set.completed');
       if (completed && (actualReps === null || actualReps === 0)) fail('session.set.actualReps', 'выполненный подход требует положительного факта повторений');
       const updatedAt = validateWorkoutTimestamp(row.updatedAt, 'session.set.updatedAt');

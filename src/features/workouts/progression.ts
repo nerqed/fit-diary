@@ -5,7 +5,7 @@ export const progressionRules = {
   incrementKg: 2.5,
   dumbbellIncrementKg: 1,
   minimumRirForIncrease: 2,
-  maximumWeightKg: 10_000,
+  maximumWeightKg: 600,
   dumbbellIds: new Set([
     'builtin:squat-goblet', 'builtin:lunge-dumbbell', 'builtin:dumbbell-bench', 'builtin:dumbbell-fly',
     'builtin:dumbbell-row', 'builtin:dumbbell-shoulder', 'builtin:lateral-raise', 'builtin:rear-delt',

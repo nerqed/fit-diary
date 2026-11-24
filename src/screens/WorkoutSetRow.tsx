@@ -33,7 +33,7 @@ type Props = Readonly<{
 export function WorkoutSetRow({ position, set, bodyweight, showRir, inputs, onInput, onBlur, onCheck, onRir }: Props) {
   const [addingLoad, setAddingLoad] = useState(false);
   const kg = displayedWeight(set);
-  const weight = inputs.weight ?? (kg === null ? '' : showNumber(kg));
+  const weight = inputs.weight ?? (kg === null || (bodyweight && kg === 0) ? '' : showNumber(kg));
   const reps = inputs.reps ?? String(set.actualReps ?? set.plannedReps);
   const ownWeight = bodyweight && !addingLoad && (weight === '' || Number(weight.replace(',', '.')) === 0);
   const planned = set.plannedWeightKg;
