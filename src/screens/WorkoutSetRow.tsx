@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { ComparedSet } from '../features/workouts/controller';
+import { MAX_INPUT_REPS, MAX_INPUT_WEIGHT_KG } from '../features/workouts/validation';
 import { Colors, Radii, Spacing, Typography } from '../theme';
 import { Chip, Row } from './ui';
 
@@ -14,8 +15,13 @@ export function showNumber(value: number) {
 }
 
 export function displayedWeight(set: ComparedSet) {
-  if (set.completed || set.actualWeightKg !== null) return set.actualWeightKg;
+  if (set.completed || (set.actualWeightKg !== null && (!set.copiedWeight || set.actualWeightKg <= MAX_INPUT_WEIGHT_KG))) return set.actualWeightKg;
   return set.suggestedWeightKg;
+}
+
+export function displayedReps(set: ComparedSet) {
+  if (set.completed || (set.actualReps !== null && (!set.copiedReps || set.actualReps <= MAX_INPUT_REPS))) return set.actualReps;
+  return set.plannedReps <= MAX_INPUT_REPS ? set.plannedReps : null;
 }
 
 export function setLabel(weight: number | null, reps: number | null, bodyweight: boolean) {
@@ -34,7 +40,8 @@ export function WorkoutSetRow({ position, set, bodyweight, showRir, inputs, onIn
   const [addingLoad, setAddingLoad] = useState(false);
   const kg = displayedWeight(set);
   const weight = inputs.weight ?? (kg === null || (bodyweight && kg === 0) ? '' : showNumber(kg));
-  const reps = inputs.reps ?? String(set.actualReps ?? set.plannedReps);
+  const repCount = displayedReps(set);
+  const reps = inputs.reps ?? (repCount === null ? '' : String(repCount));
   const ownWeight = bodyweight && !addingLoad && (weight === '' || Number(weight.replace(',', '.')) === 0);
   const planned = set.plannedWeightKg;
   const previous = set.previous;
@@ -66,7 +73,7 @@ export function WorkoutSetRow({ position, set, bodyweight, showRir, inputs, onIn
       <View style={styles.hints}>
         <Text style={styles.meta}>Прошлый раз: {previous
           ? setLabel(previous.actualWeightKg, previous.actualReps, bodyweight) : '—'}</Text>
-        {!set.completed && kg === null && inputs.weight === undefined && planned !== null && planned > 0 && (
+        {!set.completed && kg === null && inputs.weight === undefined && planned !== null && planned > 0 && planned <= MAX_INPUT_WEIGHT_KG && (
           <Pressable accessibilityRole="button" accessibilityLabel={`Подставить плановый вес ${showNumber(planned)} кг`}
             onPress={() => onInput('weight', showNumber(planned))} hitSlop={4}>
             <Text style={styles.link}>Из плана · {showNumber(planned)} кг</Text>

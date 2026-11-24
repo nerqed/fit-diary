@@ -199,6 +199,9 @@ test('expiring an old rest timer cannot clear a replacement or notify after fini
   assert.equal(await repository.setRestDeadline('running', fresh, old), true);
   assert.equal(await repository.setRestDeadline('running', null, old), false);
   assert.equal((await repository.getSession('running'))?.restEndsAt, fresh);
+  await assert.rejects(repository.finishSession('running', 'completed', finishedAt), /Отметь хотя бы один подход/);
+  assert.equal((await repository.getSession('running'))?.restEndsAt, fresh);
+  await repository.updateSet('running', 'running:set:0:0', { actualReps: 8, actualWeightKg: 40, completed: true }, updatedAt);
   await repository.finishSession('running', 'completed', finishedAt);
   assert.equal(await repository.setRestDeadline('running', null, fresh), false);
 });

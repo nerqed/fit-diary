@@ -5,7 +5,7 @@ import type {
 import { defaultWorkoutSettings } from '../../features/workouts/model';
 import {
   validateBodyWeight, validateExercise, validateSession, validateSetResult, validateTemplate, validateWorkoutData, validateWorkoutSettings,
-  validateWorkoutId, validateWorkoutTimestamp, validateWorkoutTimeZone,
+  validateTemplateInputLimits, validateWorkoutId, validateWorkoutTimestamp, validateWorkoutTimeZone,
 } from '../../features/workouts/validation';
 import { sessionDay } from '../../features/workouts/workoutDates';
 import type { SqlConnection, SqlDatabase } from './connection';
@@ -335,6 +335,7 @@ export function createWorkoutRepository(database: SqlDatabase): WorkoutRepositor
         const previous = (await templates(connection)).find((item) => item.id === template.id);
         if (previous?.archived && !template.archived) throw new Error('Шаблон находится в архиве.');
         if (previous && (template.createdAt !== previous.createdAt || Date.parse(template.updatedAt) < Date.parse(previous.updatedAt))) throw new Error('Дата создания или версия шаблона не совпадает.');
+        validateTemplateInputLimits(template, previous);
         await ensureIdsAvailable(connection, templateIds(template), previous ? templateIds(previous) : []);
         await writeTemplate(connection, template);
       });
@@ -387,7 +388,6 @@ export function createWorkoutRepository(database: SqlDatabase): WorkoutRepositor
     }),
     updateSet: (sessionId, setId, result: SetResult, now: WorkoutTimestamp, restDeadline?: WorkoutTimestamp) => queued(async () => {
       validateWorkoutId(sessionId); validateWorkoutId(setId); validateWorkoutTimestamp(now);
-      const validatedResult = validateSetResult(result);
       await database.transaction(async (connection) => {
         const session = await getRequiredSession(connection, sessionId);
         if (session.status === 'abandoned') throw new Error('Тренировка отменена.');
@@ -396,6 +396,7 @@ export function createWorkoutRepository(database: SqlDatabase): WorkoutRepositor
         const set = exercise?.sets[position];
         if (!exercise || !set) throw new Error('Подход не найден в этой тренировке.');
         if (Date.parse(now) < Date.parse(set.updatedAt)) throw new Error('Подход уже содержит более новое изменение.');
+        const validatedResult = validateSetResult(result, set);
         const { editedFields, ...facts } = validatedResult;
         const copiedReps = !editedFields?.reps && !!set.copiedReps && !validatedResult.completed && set.actualReps === validatedResult.actualReps;
         const copiedWeight = !editedFields?.weight && !!set.copiedWeight && !validatedResult.completed && set.actualWeightKg === validatedResult.actualWeightKg;
@@ -428,6 +429,9 @@ export function createWorkoutRepository(database: SqlDatabase): WorkoutRepositor
         const session = await getRequiredSession(connection, id);
         if (session.status === status) return; // Retried completion preserves the original finish time.
         requireActive(session);
+        if (status === 'completed' && !session.exercises.some((entry) => entry.sets.some((set) => set.completed))) {
+          throw new Error('Отметь хотя бы один подход перед завершением.');
+        }
         validateSession({ ...session, status, finishedAt, restEndsAt: null });
         await connection.run('UPDATE sessions SET status=?,finished_at=?,rest_ends_at=NULL WHERE id=?', [status, finishedAt, id]);
       });

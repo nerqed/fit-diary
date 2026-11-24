@@ -6,6 +6,7 @@ import { Alert, AppState, Keyboard, Pressable, StyleSheet, Text, TextInput, View
 
 import { getSessionSummary } from '../features/workouts/analytics';
 import { useWorkout } from '../features/workouts/WorkoutContext';
+import { MAX_INPUT_REPS, MAX_INPUT_WEIGHT_KG } from '../features/workouts/validation';
 import { formatDay, sessionDay } from '../features/workouts/workoutDates';
 import type { ComparedSet, SessionView } from '../features/workouts/controller';
 import type { RootStackParamList } from '../navigation/types';
@@ -16,7 +17,7 @@ import { ExercisePicker } from './ExercisePicker';
 import { EmptyState, ScreenShell } from './ScreenShell';
 import { PrimaryButton } from './ui';
 import { WorkoutRestBanner } from './WorkoutRestTimer';
-import { displayedWeight, setLabel, showNumber, WorkoutSetRow, type SetInputs } from './WorkoutSetRow';
+import { displayedReps, displayedWeight, setLabel, showNumber, WorkoutSetRow, type SetInputs } from './WorkoutSetRow';
 
 const restSeconds = 90;
 const formatVolume = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
@@ -36,10 +37,10 @@ function readNumber(text: string, field: keyof SetInputs) {
   if (!value) return null;
   const number = Number(value);
   const valid = field === 'reps' ? /^\d+$/.test(value) : /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value);
-  const maximum = field === 'reps' ? 300 : 600;
+  const maximum = field === 'reps' ? MAX_INPUT_REPS : MAX_INPUT_WEIGHT_KG;
   if (!valid || !Number.isFinite(number) || number > maximum) {
-    throw new Error(field === 'reps' ? 'Укажите целое число повторений от 0 до 300.'
-      : 'Укажите вес от 0 до 600 кг или оставьте поле пустым.');
+    throw new Error(field === 'reps' ? `Укажите целое число повторений от 0 до ${maximum}.`
+      : `Укажите вес от 0 до ${maximum} кг или оставьте поле пустым.`);
   }
   return number;
 }
@@ -89,7 +90,7 @@ function SessionDetails({ id, initialEdit }: { id: string; initialEdit: boolean 
     const matching = draft?.exerciseId === exerciseId ? draft : undefined;
     const values = rowInputs(matching, exerciseId, set);
     const confirming = action.completed === true && !set.completed;
-    let actualReps = confirming ? set.actualReps ?? set.plannedReps : set.actualReps;
+    let actualReps = confirming ? displayedReps(set) : set.actualReps;
     let actualWeightKg = confirming ? displayedWeight(set) : set.actualWeightKg;
     if (values.weight !== undefined) actualWeightKg = readNumber(values.weight, 'weight');
     if (values.reps !== undefined) actualReps = readNumber(values.reps, 'reps');

@@ -175,6 +175,7 @@ test('weight suggestions require all planned sets and use actual weights and the
     [...suggestWeights(id, name, previous, false).values()];
   assert.deepEqual(suggested('builtin:bench-press', 'Жим', inputs), [62.5, 57.5]);
   assert.deepEqual(suggested('builtin:bench-press', 'Жим', [set('a', 599, 8)]), [600]);
+  assert.deepEqual(suggested('builtin:bench-press', 'Жим', [set('a', 790, 8), set('b', 790, 7)]), []);
   assert.deepEqual(suggested('builtin:hammer-curl', 'Молотки', inputs), [61, 56]);
   assert.deepEqual(suggested('custom', 'Жим гантели лёжа', inputs), [61, 56]);
   assert.deepEqual(suggested('bench', 'Жим', [inputs[0]!, set('b', 55, 7)]), [60, 55]);

@@ -7,6 +7,7 @@ import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-nativ
 import { useWorkout } from '../features/workouts/WorkoutContext';
 import type { Exercise, WorkoutTemplate } from '../features/workouts/model';
 import { isBodyweightExercise } from '../features/workouts/progression';
+import { MAX_INPUT_REPS, MAX_INPUT_WEIGHT_KG, validateTemplateInputLimits } from '../features/workouts/validation';
 import { formatDay, localDay, sessionDay } from '../features/workouts/workoutDates';
 import type { RootStackParamList } from '../navigation/types';
 import { Colors, Radii, Spacing, Typography } from '../theme';
@@ -31,7 +32,7 @@ function move<T>(items: T[], index: number, delta: number): T[] {
 }
 
 function toTemplate(template: WorkoutTemplate, name: string, entries: DraftEntry[], catalog: Map<string, Exercise>): WorkoutTemplate {
-  return {
+  const draft = {
     ...template,
     name,
     exercises: entries.map((entry) => ({
@@ -39,18 +40,20 @@ function toTemplate(template: WorkoutTemplate, name: string, entries: DraftEntry
       sets: entry.sets.map((set, index) => {
         const field = `${catalog.get(entry.exerciseId)?.name ?? 'Упражнение'} · подход ${index + 1}`;
         const reps = Number(set.reps.trim());
-        if (!/^\d+$/.test(set.reps.trim()) || reps < 1 || reps > 10000) {
-          throw new Error(`${field}. Введите от 1 до 10 000 повторений.`);
+        if (!/^\d+$/.test(set.reps.trim()) || reps < 1) {
+          throw new Error(`${field}. Введите от 1 до ${MAX_INPUT_REPS} повторений.`);
         }
         const text = set.weight.trim().replace(',', '.');
         const weightKg = text ? Number(text) : null;
-        if (weightKg !== null && (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) || weightKg > 10000)) {
-          throw new Error(`${field}. Вес можно пропустить или указать числом от 0 до 10 000 кг.`);
+        if (weightKg !== null && !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) {
+          throw new Error(`${field}. Вес можно пропустить или указать числом от 0 до ${MAX_INPUT_WEIGHT_KG} кг.`);
         }
         return { id: set.id, reps, weightKg };
       }),
     })),
   };
+  validateTemplateInputLimits(draft, template);
+  return draft;
 }
 
 function IconAction({ name, label, onPress }: { name: SFSymbol; label: string; onPress: () => void }) {
@@ -119,10 +122,11 @@ function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: str
     const previous = data.sessions.find((session) => session.status === 'completed' && sessionDay(session) <= targetDay
       && session.exercises.some((entry) => entry.exerciseId === exercise.id));
     const previousEntry = previous?.exercises.find((entry) => entry.exerciseId === exercise.id);
-    const sets = previousEntry?.sets.map((set) => ({
-      id: controller.newId(), reps: String(set.actualReps || set.plannedReps),
-      weight: decimalText(set.actualWeightKg ?? set.plannedWeightKg),
-    })) ?? [{ id: controller.newId(), reps: '8', weight: '' }];
+    const sets = previousEntry?.sets.map((set) => {
+      const reps = [set.actualReps, set.plannedReps].find((value) => value !== null && value >= 1 && value <= MAX_INPUT_REPS);
+      const weight = [set.actualWeightKg, set.plannedWeightKg].find((value) => value !== null && value <= MAX_INPUT_WEIGHT_KG);
+      return { id: controller.newId(), reps: String(reps ?? 8), weight: decimalText(weight ?? null) };
+    }) ?? [{ id: controller.newId(), reps: '8', weight: '' }];
 
     if (picker && picker !== 'add') {
       updateEntry(picker.replaceId, (entry) => ({ ...entry, exerciseId: exercise.id, sets }));
@@ -141,7 +145,9 @@ function TemplateForm({ existing, day }: { existing?: WorkoutTemplate; day?: str
 
   function addSet(entry: DraftEntry) {
     const last = entry.sets[entry.sets.length - 1];
-    const set = { id: controller.newId(), reps: last?.reps || '8', weight: last?.weight ?? '' };
+    const reps = last?.reps && Number(last.reps) <= MAX_INPUT_REPS ? last.reps : '8';
+    const weight = last?.weight && Number(last.weight.replace(',', '.')) <= MAX_INPUT_WEIGHT_KG ? last.weight : '';
+    const set = { id: controller.newId(), reps, weight };
     updateEntry(entry.id, (current) => ({ ...current, sets: [...current.sets, set] }));
   }
 
